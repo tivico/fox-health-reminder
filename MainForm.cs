@@ -3,6 +3,7 @@ using System.Data;
 using System.Media;
 using HealthReminder.Models;
 using HealthReminder.Forms;
+using HealthReminder.Controls;
 using HealthReminder.Services;
 using HealthReminder.UI;
 using HealthReminder.Windows;
@@ -26,6 +27,10 @@ public partial class MainForm : Form
     private Button? _todayNavigationButton;
     private Button? _settingsNavigationButton;
     private Button? _statisticsNavigationButton;
+    private BindingList<ReminderItem>? _reminderItems;
+    private FlowLayoutPanel? _reminderCardsFlow;
+    private FlowLayoutPanel? _countdownCardsFlow;
+    private readonly Dictionary<string, ReminderCountdownCard> _countdownCards = new();
 
     // 多圖示支援
     private Icon? _mainIcon;      // 主圖示（小狐狸）
@@ -125,7 +130,6 @@ public partial class MainForm : Form
     {
         // 初始化 UI
         InitializeListViews();
-        InitializeDataGridView();
         LoadSettingsToUI();
 
         // 初始化提醒服務
@@ -374,6 +378,39 @@ public partial class MainForm : Form
         }
 
         UpdateHeaderStatus();
+        UpdateCountdownDisplay();
+    }
+
+    private Button CreateQuickPauseButton(string text, EventHandler clickHandler)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Size = new Size(102, 40),
+            Margin = new Padding(0, 0, 6, 0),
+            UseVisualStyleBackColor = false
+        };
+        StyleButton(button, AppTheme.SelectedBackground, Color.FromArgb(225, 235, 230), AppTheme.Primary);
+        button.Click += clickHandler;
+        return button;
+    }
+
+    private void PauseFor(TimeSpan duration)
+    {
+        _reminderService.PauseFor(duration);
+        UpdateCountdownDisplay();
+    }
+
+    private void PauseUntilEndOfDay()
+    {
+        _reminderService.PauseUntilEndOfDay();
+        UpdateCountdownDisplay();
+    }
+
+    private void ResumeTemporaryPause()
+    {
+        _reminderService.ResumeTemporaryPause();
+        UpdateCountdownDisplay();
     }
 
     private void InitializeListViews()
@@ -418,34 +455,7 @@ public partial class MainForm : Form
 
     private void UpdateCountdownDisplay()
     {
-        listViewCountdown.BeginUpdate();
-        listViewCountdown.Items.Clear();
-
-        foreach (var timer in _reminderService.GetTimers())
-        {
-            var item = timer.Item;
-            var remaining = timer.RemainingTime;
-
-            var listItem = new ListViewItem(item.IsEnabled ? "✓" : "✗");
-            listItem.SubItems.Add($"{item.Emoji} {item.Name}");
-            listItem.SubItems.Add($"{item.IntervalMinutes} 分鐘");
-            
-            if (item.IsEnabled && !timer.IsPaused)
-            {
-                listItem.SubItems.Add($"{remaining.Hours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}");
-                listItem.SubItems.Add(timer.NextTriggerTime.ToString("HH:mm:ss"));
-            }
-            else
-            {
-                listItem.SubItems.Add(timer.IsPaused ? "已暫停" : "未啟用");
-                listItem.SubItems.Add("-");
-            }
-
-            listItem.Tag = item.Id;
-            listViewCountdown.Items.Add(listItem);
-        }
-
-        listViewCountdown.EndUpdate();
+        UpdateCountdownCards();
 
         // 更新托盤圖示提示文字
         var nextTimer = _reminderService.GetTimers()
@@ -479,34 +489,48 @@ public partial class MainForm : Form
         UpdateHeaderStatus();
     }
 
+    private void UpdateCountdownCards()
+    {
+        if (_countdownCardsFlow == null) return;
+
+        var timers = _reminderService.GetTimers();
+        var activeIds = timers.Select(timer => timer.Item.Id).ToHashSet(StringComparer.Ordinal);
+
+        foreach (var timer in timers)
+        {
+            if (!_countdownCards.TryGetValue(timer.Item.Id, out var card))
+            {
+                card = new ReminderCountdownCard();
+                _countdownCards[timer.Item.Id] = card;
+                _countdownCardsFlow.Controls.Add(card);
+            }
+
+            card.Width = GetFlowCardWidth(_countdownCardsFlow);
+            card.UpdateFrom(timer);
+        }
+
+        foreach (var staleId in _countdownCards.Keys.Where(id => !activeIds.Contains(id)).ToList())
+        {
+            var card = _countdownCards[staleId];
+            _countdownCardsFlow.Controls.Remove(card);
+            card.Dispose();
+            _countdownCards.Remove(staleId);
+        }
+    }
+
     #endregion
 
     #region 設定頁面
 
     private void btnAddReminder_Click(object sender, EventArgs e)
     {
-        var bindingList = dataGridViewReminders.DataSource as BindingList<ReminderItem>;
-        if (bindingList == null) return;
+        if (_reminderItems == null) return;
 
-        // 建立新的提醒項目
-        var newItem = new ReminderItem
-        {
-            Type = ReminderType.Custom,
-            Name = "新提醒",
-            Message = "該休息一下囉！",
-            IntervalMinutes = 30,
-            Emoji = "💡",
-            IsEnabled = true,
-            PlaySound = true
-        };
+        using var editor = new ReminderEditorForm();
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
 
-        bindingList.Add(newItem);
-
-        // 選取新增的那行，方便編輯
-        int newRowIndex = bindingList.Count - 1;
-        dataGridViewReminders.ClearSelection();
-        dataGridViewReminders.CurrentCell = dataGridViewReminders.Rows[newRowIndex].Cells[0];
-        dataGridViewReminders.Rows[newRowIndex].Selected = true;
+        _reminderItems.Add(editor.ResultItem);
+        RefreshReminderCards();
     }
 
     private void InitializeDataGridView()
@@ -573,9 +597,9 @@ public partial class MainForm : Form
     {
         var settings = SettingsManager.Instance.Settings;
 
-        // 載入提醒項目到 DataGridView
-        var bindingList = new BindingList<ReminderItem>(settings.Reminders);
-        dataGridViewReminders.DataSource = bindingList;
+        _reminderItems = new BindingList<ReminderItem>(
+            settings.Reminders.Select(CloneReminderItem).ToList());
+        RefreshReminderCards();
 
         // 一般設定
         chkStartWithWindows.Checked = settings.StartWithWindows;
@@ -612,59 +636,15 @@ public partial class MainForm : Form
 
     private void btnDeleteReminder_Click(object sender, EventArgs e)
     {
-        var bindingList = dataGridViewReminders.DataSource as BindingList<ReminderItem>;
-        if (bindingList == null) return;
-
-        // 用 CurrentCell 取得目前所在行
-        if (dataGridViewReminders.CurrentCell == null)
-        {
-            MessageBox.Show("請先選擇要刪除的項目！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        int rowIndex = dataGridViewReminders.CurrentCell.RowIndex;
-
-        // 檢查是否選到新增行（最後一行空白行）
-        if (rowIndex >= bindingList.Count)
-        {
-            MessageBox.Show("請先選擇要刪除的項目！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        // 檢查是否只剩一個項目
-        if (bindingList.Count <= 1)
-        {
-            MessageBox.Show("至少要保留一個提醒項目！", "無法刪除", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var result = MessageBox.Show(
-            $"確定要刪除「{bindingList[rowIndex].Name}」嗎？",
-            "確認刪除",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question);
-
-        if (result == DialogResult.Yes)
-        {
-            bindingList.RemoveAt(rowIndex);
-
-            // 刪除後重新選取
-            if (bindingList.Count > 0)
-            {
-                int newIndex = Math.Min(rowIndex, bindingList.Count - 1);
-                dataGridViewReminders.CurrentCell = dataGridViewReminders.Rows[newIndex].Cells[0];
-            }
-        }
+        MessageBox.Show("請在提醒卡片上點選「刪除」。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
     private void SaveSettings()
     {
-        dataGridViewReminders.EndEdit();
         var settings = SettingsManager.Instance.Settings;
 
-        // 從 DataGridView 取得提醒項目
-        if (dataGridViewReminders.DataSource is BindingList<ReminderItem> bindingList)
+        if (_reminderItems != null)
         {
-            var validationError = ValidateReminders(bindingList);
+            var validationError = ValidateReminders(_reminderItems);
             if (validationError != null)
             {
                 MessageBox.Show(
@@ -675,7 +655,7 @@ public partial class MainForm : Form
                 return;
             }
 
-            settings.Reminders = bindingList.ToList();
+            settings.Reminders = _reminderItems.ToList();
         }
 
         // 一般設定
@@ -707,6 +687,92 @@ public partial class MainForm : Form
         _reminderService.Reload();
 
         MessageBox.Show("設定已儲存！", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void RefreshReminderCards()
+    {
+        if (_reminderCardsFlow == null) return;
+
+        _reminderCardsFlow.SuspendLayout();
+        while (_reminderCardsFlow.Controls.Count > 0)
+        {
+            var control = _reminderCardsFlow.Controls[0];
+            _reminderCardsFlow.Controls.RemoveAt(0);
+            control.Dispose();
+        }
+
+        if (_reminderItems != null)
+        {
+            foreach (var item in _reminderItems)
+            {
+                var card = new ReminderCardControl(item)
+                {
+                    Width = GetFlowCardWidth(_reminderCardsFlow)
+                };
+                card.EditRequested += (_, _) => EditReminder(item);
+                card.DeleteRequested += (_, _) => DeleteReminder(item);
+                _reminderCardsFlow.Controls.Add(card);
+            }
+        }
+
+        _reminderCardsFlow.ResumeLayout(true);
+    }
+
+    private void EditReminder(ReminderItem item)
+    {
+        if (_reminderItems == null) return;
+
+        using var editor = new ReminderEditorForm(item);
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
+
+        var index = _reminderItems.IndexOf(item);
+        if (index >= 0)
+        {
+            _reminderItems[index] = editor.ResultItem;
+            RefreshReminderCards();
+        }
+    }
+
+    private void DeleteReminder(ReminderItem item)
+    {
+        if (_reminderItems == null) return;
+        if (_reminderItems.Count <= 1)
+        {
+            MessageBox.Show("至少要保留一個提醒項目。", "無法刪除", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var result = MessageBox.Show(
+            this,
+            $"確定要刪除「{item.Name}」嗎？",
+            "確認刪除",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+        if (result != DialogResult.Yes) return;
+
+        _reminderItems.Remove(item);
+        RefreshReminderCards();
+    }
+
+    private static int GetFlowCardWidth(FlowLayoutPanel flow)
+    {
+        var scrollbarWidth = flow.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0;
+        return Math.Max(320, flow.ClientSize.Width - flow.Padding.Horizontal - scrollbarWidth - 2);
+    }
+
+    private static ReminderItem CloneReminderItem(ReminderItem source)
+    {
+        return new ReminderItem
+        {
+            Id = source.Id,
+            Type = source.Type,
+            Name = source.Name,
+            Message = source.Message,
+            IntervalMinutes = source.IntervalMinutes,
+            IsEnabled = source.IsEnabled,
+            PlaySound = source.PlaySound,
+            Emoji = source.Emoji
+        };
     }
 
     private static string? ValidateReminders(IEnumerable<ReminderItem> reminders)
@@ -1201,7 +1267,7 @@ public partial class MainForm : Form
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
 
         var heroCard = new CardPanel
         {
@@ -1249,11 +1315,24 @@ public partial class MainForm : Form
             Text = "今天接下來的提醒",
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
-        listViewCountdown.Dock = DockStyle.Fill;
-        listViewCountdown.BorderStyle = BorderStyle.None;
-        listViewCountdown.BackColor = AppTheme.CardBackground;
-        listViewCountdown.Resize += (_, _) => ResizeListViewColumns();
-        queueLayout.Controls.Add(listViewCountdown, 0, 1);
+        _countdownCardsFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = AppTheme.CardBackground,
+            Padding = new Padding(0, 2, 0, 0),
+            Margin = Padding.Empty
+        };
+        _countdownCardsFlow.Resize += (_, _) =>
+        {
+            foreach (ReminderCountdownCard card in _countdownCardsFlow.Controls.OfType<ReminderCountdownCard>())
+            {
+                card.Width = GetFlowCardWidth(_countdownCardsFlow);
+            }
+        };
+        queueLayout.Controls.Add(_countdownCardsFlow, 0, 1);
         queueCard.Controls.Add(queueLayout);
 
         var actionCard = new CardPanel
@@ -1262,14 +1341,39 @@ public partial class MainForm : Form
             Margin = Padding.Empty,
             Padding = new Padding(16, 10, 16, 10)
         };
-        btnPauseAll.Location = new Point(16, 10);
-        btnPauseAll.Size = new Size(176, 42);
-        btnPauseAll.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        lblPauseStatus.Location = new Point(210, 20);
+        var quickPauseTitle = new Label
+        {
+            AutoSize = true,
+            Location = new Point(16, 12),
+            Font = new Font(AppTheme.FontFamily, 9.5F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = "快速暫停"
+        };
+        lblPauseStatus.AutoSize = true;
+        lblPauseStatus.Location = new Point(112, 13);
         lblPauseStatus.Font = new Font(AppTheme.FontFamily, 9.5F, FontStyle.Bold);
         lblPauseStatus.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        actionCard.Controls.Add(btnPauseAll);
+        var pauseActions = new FlowLayoutPanel
+        {
+            Location = new Point(12, 42),
+            Size = new Size(700, 50),
+            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = AppTheme.CardBackground,
+            Margin = Padding.Empty
+        };
+        btnPauseAll.Size = new Size(142, 40);
+        btnPauseAll.Margin = new Padding(4, 0, 6, 0);
+        btnPauseAll.Text = "手動暫停";
+        pauseActions.Controls.Add(btnPauseAll);
+        pauseActions.Controls.Add(CreateQuickPauseButton("30 分鐘", (_, _) => PauseFor(TimeSpan.FromMinutes(30))));
+        pauseActions.Controls.Add(CreateQuickPauseButton("1 小時", (_, _) => PauseFor(TimeSpan.FromHours(1))));
+        pauseActions.Controls.Add(CreateQuickPauseButton("今天暫停", (_, _) => PauseUntilEndOfDay()));
+        pauseActions.Controls.Add(CreateQuickPauseButton("立即恢復", (_, _) => ResumeTemporaryPause()));
+        actionCard.Controls.Add(quickPauseTitle);
         actionCard.Controls.Add(lblPauseStatus);
+        actionCard.Controls.Add(pauseActions);
 
         layout.Controls.Add(heroCard, 0, 0);
         layout.Controls.Add(queueCard, 0, 1);
@@ -1289,27 +1393,128 @@ public partial class MainForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = false,
-            Height = 500,
+            Height = 675,
             ColumnCount = 1,
             RowCount = 4,
             BackColor = AppTheme.WindowBackground,
             Padding = Padding.Empty,
             Margin = Padding.Empty
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 245));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 420));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
 
-        ConfigureSettingsGroup(groupBoxReminders, "提醒項目");
-        ConfigureSettingsGroup(groupBoxGeneral, "一般設定");
-        ConfigureSettingsGroup(groupBoxDoNotDisturb, "勿擾時段");
+        var reminderSection = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 10),
+            Padding = new Padding(16, 12, 16, 14)
+        };
+        var reminderHeader = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 48,
+            BackColor = AppTheme.CardBackground
+        };
+        reminderHeader.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Location = new Point(0, 8),
+            Font = new Font(AppTheme.FontFamily, 11F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = "提醒項目"
+        });
+        var addReminderButton = new Button
+        {
+            Text = "+ 新增提醒",
+            Size = new Size(112, 36),
+            Location = new Point(540, 0),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            UseVisualStyleBackColor = false
+        };
+        StyleButton(addReminderButton, AppTheme.Healthy, Color.FromArgb(64, 133, 94), Color.White);
+        addReminderButton.Click += (_, eventArgs) => btnAddReminder_Click(addReminderButton, eventArgs);
+        reminderHeader.Controls.Add(addReminderButton);
+        reminderHeader.Resize += (_, _) => addReminderButton.Left = reminderHeader.ClientSize.Width - addReminderButton.Width;
+        btnDeleteReminder.Visible = false;
 
-        dataGridViewReminders.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        btnAddReminder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-        btnDeleteReminder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-        groupBoxReminders.Resize += (_, _) => ArrangeReminderGroup();
-        ArrangeReminderGroup();
+        _reminderCardsFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = AppTheme.CardBackground,
+            Padding = new Padding(0, 2, 0, 0),
+            Margin = Padding.Empty
+        };
+        _reminderCardsFlow.Resize += (_, _) =>
+        {
+            foreach (ReminderCardControl card in _reminderCardsFlow.Controls.OfType<ReminderCardControl>())
+            {
+                card.Width = GetFlowCardWidth(_reminderCardsFlow);
+            }
+        };
+        var reminderLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = AppTheme.CardBackground,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        reminderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        reminderLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        reminderLayout.Controls.Add(reminderHeader, 0, 0);
+        reminderLayout.Controls.Add(_reminderCardsFlow, 0, 1);
+        reminderSection.Controls.Add(reminderLayout);
+
+        var generalCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 10),
+            Padding = new Padding(16, 10, 16, 10)
+        };
+        generalCard.Controls.Add(CreateSettingsSectionTitle("一般設定"));
+        chkStartWithWindows.Location = new Point(18, 50);
+        chkStartMinimized.Location = new Point(164, 50);
+        lblSnoozeMinutes.Location = new Point(338, 52);
+        numSnoozeMinutes.Location = new Point(446, 48);
+        numSnoozeMinutes.Size = new Size(58, 26);
+        lblSnoozeUnit.Location = new Point(510, 52);
+        generalCard.Controls.AddRange(new Control[]
+        {
+            chkStartWithWindows,
+            chkStartMinimized,
+            lblSnoozeMinutes,
+            numSnoozeMinutes,
+            lblSnoozeUnit
+        });
+
+        var doNotDisturbCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 10),
+            Padding = new Padding(16, 10, 16, 10)
+        };
+        doNotDisturbCard.Controls.Add(CreateSettingsSectionTitle("勿擾時段"));
+        chkDoNotDisturb.Location = new Point(18, 45);
+        lblDoNotDisturbStart.Location = new Point(104, 48);
+        dtpDoNotDisturbStart.Location = new Point(146, 43);
+        dtpDoNotDisturbStart.Size = new Size(76, 26);
+        lblDoNotDisturbEnd.Location = new Point(252, 48);
+        dtpDoNotDisturbEnd.Location = new Point(294, 43);
+        dtpDoNotDisturbEnd.Size = new Size(76, 26);
+        doNotDisturbCard.Controls.AddRange(new Control[]
+        {
+            chkDoNotDisturb,
+            lblDoNotDisturbStart,
+            dtpDoNotDisturbStart,
+            lblDoNotDisturbEnd,
+            dtpDoNotDisturbEnd
+        });
 
         var actions = new FlowLayoutPanel
         {
@@ -1327,13 +1532,26 @@ public partial class MainForm : Form
         actions.Controls.Add(btnSaveSettings);
         actions.Controls.Add(btnResetDefaults);
 
-        layout.Controls.Add(groupBoxReminders, 0, 0);
-        layout.Controls.Add(groupBoxGeneral, 0, 1);
-        layout.Controls.Add(groupBoxDoNotDisturb, 0, 2);
+        layout.Controls.Add(reminderSection, 0, 0);
+        layout.Controls.Add(generalCard, 0, 1);
+        layout.Controls.Add(doNotDisturbCard, 0, 2);
         layout.Controls.Add(actions, 0, 3);
         panelSettings.Controls.Add(layout);
         panelSettings.Resize += (_, _) => layout.Width = panelSettings.ClientSize.Width;
+        RefreshReminderCards();
         panelSettings.ResumeLayout(true);
+    }
+
+    private static Label CreateSettingsSectionTitle(string text)
+    {
+        return new Label
+        {
+            AutoSize = true,
+            Location = new Point(16, 12),
+            Font = new Font(AppTheme.FontFamily, 10F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = text
+        };
     }
 
     private static void ConfigureSettingsGroup(GroupBox groupBox, string title)
@@ -1465,11 +1683,39 @@ public partial class MainForm : Form
             _headerStatusLabel.ForeColor = AppTheme.Warning;
             _headerStatusLabel.BackColor = Color.FromArgb(255, 247, 226);
         }
+        else if (_reminderService.IsTemporarilyPaused)
+        {
+            var resumeAt = _reminderService.TemporaryPauseUntilLocal;
+            _headerStatusLabel.Text = resumeAt?.Date == DateTime.Today
+                ? $"Ⅱ  暫停至 {resumeAt:HH:mm}"
+                : $"Ⅱ  暫停至 {resumeAt:MM/dd HH:mm}";
+            _headerStatusLabel.ForeColor = AppTheme.Warning;
+            _headerStatusLabel.BackColor = Color.FromArgb(255, 247, 226);
+        }
         else
         {
             _headerStatusLabel.Text = "●  提醒運行中";
             _headerStatusLabel.ForeColor = AppTheme.Healthy;
             _headerStatusLabel.BackColor = Color.FromArgb(237, 248, 241);
+        }
+
+        if (_reminderService.IsPausedAll)
+        {
+            lblPauseStatus.Text = "手動暫停中";
+            lblPauseStatus.ForeColor = AppTheme.Warning;
+            btnPauseAll.Text = "恢復手動暫停";
+        }
+        else if (_reminderService.IsTemporarilyPaused)
+        {
+            lblPauseStatus.Text = $"暫停至 {_reminderService.TemporaryPauseUntilLocal:HH:mm}";
+            lblPauseStatus.ForeColor = AppTheme.Warning;
+            btnPauseAll.Text = "手動暫停";
+        }
+        else
+        {
+            lblPauseStatus.Text = "提醒運行中";
+            lblPauseStatus.ForeColor = AppTheme.Healthy;
+            btnPauseAll.Text = "手動暫停";
         }
 
         ApplyRoundedRegion(_headerStatusLabel, 12);

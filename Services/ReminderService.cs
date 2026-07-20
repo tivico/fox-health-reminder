@@ -5,7 +5,8 @@ namespace HealthReminder.Services;
 public enum ReminderPauseReason
 {
     User,
-    DoNotDisturb
+    DoNotDisturb,
+    Temporary
 }
 
 /// <summary>
@@ -198,6 +199,10 @@ public class ReminderService : IDisposable
     /// </summary>
     public bool IsPausedAll { get; private set; } = false;
 
+    public DateTimeOffset? TemporaryPauseUntilUtc { get; private set; }
+    public bool IsTemporarilyPaused => TemporaryPauseUntilUtc > DateTimeOffset.UtcNow;
+    public DateTime? TemporaryPauseUntilLocal => TemporaryPauseUntilUtc?.LocalDateTime;
+
     public ReminderService()
     {
         // 勿擾模式檢查器
@@ -251,6 +256,10 @@ public class ReminderService : IDisposable
                 {
                     timer.Pause(ReminderPauseReason.User);
                 }
+                if (IsTemporarilyPaused)
+                {
+                    timer.Pause(ReminderPauseReason.Temporary);
+                }
             }
         }
 
@@ -259,6 +268,7 @@ public class ReminderService : IDisposable
 
     private void CountdownTimer_Tick(object? sender, EventArgs e)
     {
+        CheckTemporaryPause();
         OnCountdownTick?.Invoke(this, EventArgs.Empty);
     }
 
@@ -347,6 +357,50 @@ public class ReminderService : IDisposable
             {
                 timer.Resume(ReminderPauseReason.User);
             }
+        }
+    }
+
+    /// <summary>
+    /// 暫停所有提醒至指定時間，但不覆蓋使用者手動暫停或勿擾狀態。
+    /// </summary>
+    public void PauseUntil(DateTimeOffset resumeAtUtc)
+    {
+        TemporaryPauseUntilUtc = resumeAtUtc;
+        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
+        {
+            timer.Pause(ReminderPauseReason.Temporary);
+        }
+
+        OnCountdownTick?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void PauseFor(TimeSpan duration)
+    {
+        PauseUntil(DateTimeOffset.UtcNow.Add(duration));
+    }
+
+    public void PauseUntilEndOfDay()
+    {
+        var tomorrowLocal = DateTime.Today.AddDays(1);
+        PauseUntil(new DateTimeOffset(tomorrowLocal).ToUniversalTime());
+    }
+
+    public void ResumeTemporaryPause()
+    {
+        TemporaryPauseUntilUtc = null;
+        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
+        {
+            timer.Resume(ReminderPauseReason.Temporary);
+        }
+
+        OnCountdownTick?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CheckTemporaryPause()
+    {
+        if (TemporaryPauseUntilUtc is { } resumeAt && DateTimeOffset.UtcNow >= resumeAt)
+        {
+            ResumeTemporaryPause();
         }
     }
 
