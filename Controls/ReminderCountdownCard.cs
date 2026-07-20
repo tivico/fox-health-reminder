@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using HealthReminder.Models;
 using HealthReminder.Services;
 using HealthReminder.UI;
 
@@ -51,7 +52,11 @@ public sealed class ReminderCountdownCard : UserControl
         ReminderId = item.Id;
         _emojiLabel.Text = item.Emoji;
         _nameLabel.Text = item.Name;
-        _intervalLabel.Text = item.IsEnabled ? $"每 {item.IntervalMinutes} 分鐘" : "目前未啟用";
+        _intervalLabel.Text = !item.IsEnabled
+            ? "目前未啟用"
+            : item.ScheduleKind == ReminderScheduleKind.OneTime
+                ? $"一次性 · {item.OneTimeAtLocal:MM/dd HH:mm}"
+                : $"每 {item.IntervalMinutes} 分鐘";
 
         if (!item.IsEnabled)
         {

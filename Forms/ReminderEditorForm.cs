@@ -5,14 +5,23 @@ using HealthReminder.UI;
 namespace HealthReminder.Forms;
 
 /// <summary>
-/// 新增與編輯提醒的專用對話框，避免直接操作表格儲存格。
+/// 通用提醒編輯器：排程方式與完成方式彼此獨立，不綁定特定健康任務。
 /// </summary>
 public sealed class ReminderEditorForm : Form
 {
     private readonly TextBox _nameTextBox;
     private readonly TextBox _messageTextBox;
     private readonly ComboBox _emojiComboBox;
+    private readonly ComboBox _scheduleKindComboBox;
     private readonly NumericUpDown _intervalInput;
+    private readonly DateTimePicker _oneTimeInput;
+    private readonly Label _intervalUnitLabel;
+    private readonly ComboBox _actionKindComboBox;
+    private readonly NumericUpDown _activitySecondsInput;
+    private readonly Label _activitySecondsLabel;
+    private readonly Label _activitySecondsUnitLabel;
+    private readonly ToggleSwitch _autoStartSwitch;
+    private readonly Label _autoStartLabel;
     private readonly ToggleSwitch _enabledSwitch;
     private readonly ToggleSwitch _soundSwitch;
     private readonly ReminderItem _workingItem;
@@ -23,7 +32,7 @@ public sealed class ReminderEditorForm : Form
 
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = AppTheme.WindowBackground;
-        ClientSize = new Size(540, 520);
+        ClientSize = new Size(560, 630);
         Font = new Font(AppTheme.FontFamily, 9F);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -32,86 +41,117 @@ public sealed class ReminderEditorForm : Form
         StartPosition = FormStartPosition.CenterParent;
         Text = source == null ? "新增提醒" : "編輯提醒";
 
-        var title = new Label
+        Controls.Add(new Label
         {
             AutoSize = false,
             Location = new Point(28, 22),
-            Size = new Size(470, 34),
+            Size = new Size(500, 34),
             Font = new Font(AppTheme.FontFamily, 15F, FontStyle.Bold),
             ForeColor = AppTheme.PrimaryText,
-            Text = source == null ? "建立新的健康提醒" : $"編輯 {_workingItem.Name}"
-        };
-        var subtitle = new Label
+            Text = source == null ? "建立新的提醒任務" : $"編輯 {_workingItem.Name}"
+        });
+        Controls.Add(new Label
         {
             AutoSize = false,
             Location = new Point(30, 58),
-            Size = new Size(470, 24),
+            Size = new Size(500, 24),
             ForeColor = AppTheme.SecondaryText,
-            Text = "設定名稱、提醒內容與間隔，儲存後會重新開始倒數。"
-        };
+            Text = "自由組合持續／一次性排程，以及手動／計時完成方式。"
+        });
 
-        _nameTextBox = CreateTextBox(new Point(30, 118), new Size(310, 30));
-        _messageTextBox = CreateTextBox(new Point(30, 196), new Size(476, 72));
+        _nameTextBox = CreateTextBox(new Point(30, 118), new Size(326, 30));
+        _messageTextBox = CreateTextBox(new Point(30, 196), new Size(500, 72));
         _messageTextBox.Multiline = true;
         _messageTextBox.ScrollBars = ScrollBars.Vertical;
 
         _emojiComboBox = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(360, 118),
-            Size = new Size(146, 30),
+            Location = new Point(376, 118),
+            Size = new Size(154, 30),
             Font = new Font(AppTheme.FontFamily, 11F)
         };
-        _emojiComboBox.Items.AddRange(new object[] { "💧", "👀", "🏃", "💡", "🦊", "☕", "🧘", "🍎" });
+        _emojiComboBox.Items.AddRange(new object[] { "💧", "👀", "🏃", "💡", "🦊", "☕", "🧘", "🍎", "💊", "📌" });
+
+        _scheduleKindComboBox = CreateComboBox(new Point(30, 316), new Size(200, 30));
+        _scheduleKindComboBox.Items.AddRange(new object[] { "持續：每隔一段時間", "一次性：指定日期時間" });
+        _scheduleKindComboBox.SelectedIndexChanged += (_, _) => UpdateConditionalFields();
 
         _intervalInput = new NumericUpDown
         {
-            Location = new Point(30, 314),
+            Location = new Point(260, 316),
             Size = new Size(116, 30),
             Minimum = 1,
             Maximum = 1440,
-            Value = Math.Clamp(_workingItem.IntervalMinutes, 1, 1440),
+            Font = new Font(AppTheme.FontFamily, 10F)
+        };
+        _intervalUnitLabel = CreateMutedLabel("分鐘", new Point(384, 321));
+        _oneTimeInput = new DateTimePicker
+        {
+            CustomFormat = "yyyy/MM/dd HH:mm",
+            Format = DateTimePickerFormat.Custom,
+            Location = new Point(260, 316),
+            ShowUpDown = true,
+            Size = new Size(270, 30),
             Font = new Font(AppTheme.FontFamily, 10F)
         };
 
-        _enabledSwitch = new ToggleSwitch { Location = new Point(30, 392) };
-        _soundSwitch = new ToggleSwitch { Location = new Point(260, 392) };
+        _actionKindComboBox = CreateComboBox(new Point(30, 398), new Size(200, 30));
+        _actionKindComboBox.Items.AddRange(new object[] { "手動按下完成", "計時活動完成" });
+        _actionKindComboBox.SelectedIndexChanged += (_, _) => UpdateConditionalFields();
+
+        _activitySecondsInput = new NumericUpDown
+        {
+            Location = new Point(260, 398),
+            Size = new Size(86, 30),
+            Minimum = 5,
+            Maximum = 3600,
+            Font = new Font(AppTheme.FontFamily, 10F)
+        };
+        _activitySecondsLabel = CreateFieldLabel("活動秒數", new Point(260, 374));
+        _activitySecondsUnitLabel = CreateMutedLabel("秒", new Point(354, 403));
+        _autoStartLabel = CreateFieldLabel("通知後自動開始", new Point(398, 374));
+        _autoStartSwitch = new ToggleSwitch { Location = new Point(400, 398) };
+
+        _enabledSwitch = new ToggleSwitch { Location = new Point(30, 500) };
+        _soundSwitch = new ToggleSwitch { Location = new Point(260, 500) };
 
         var cancelButton = CreateButton("取消", Color.FromArgb(235, 229, 225), AppTheme.SecondaryText);
-        cancelButton.Location = new Point(286, 452);
+        cancelButton.Location = new Point(306, 566);
         cancelButton.DialogResult = DialogResult.Cancel;
 
         var saveButton = CreateButton("儲存提醒", AppTheme.Primary, Color.White);
-        saveButton.Location = new Point(396, 452);
+        saveButton.Location = new Point(416, 566);
         saveButton.Click += SaveButton_Click;
 
-        Controls.Add(title);
-        Controls.Add(subtitle);
         Controls.Add(CreateFieldLabel("提醒名稱", new Point(30, 94)));
-        Controls.Add(CreateFieldLabel("圖示", new Point(360, 94)));
+        Controls.Add(CreateFieldLabel("圖示", new Point(376, 94)));
         Controls.Add(_nameTextBox);
         Controls.Add(_emojiComboBox);
         Controls.Add(CreateFieldLabel("提醒訊息", new Point(30, 172)));
         Controls.Add(_messageTextBox);
-        Controls.Add(CreateFieldLabel("提醒間隔", new Point(30, 290)));
+        Controls.Add(CreateFieldLabel("排程方式", new Point(30, 292)));
+        Controls.Add(CreateFieldLabel("排程設定", new Point(260, 292)));
+        Controls.Add(_scheduleKindComboBox);
         Controls.Add(_intervalInput);
-        Controls.Add(new Label
-        {
-            AutoSize = true,
-            Location = new Point(154, 319),
-            ForeColor = AppTheme.SecondaryText,
-            Text = "分鐘"
-        });
-        Controls.Add(CreateFieldLabel("啟用提醒", new Point(30, 366)));
+        Controls.Add(_intervalUnitLabel);
+        Controls.Add(_oneTimeInput);
+        Controls.Add(CreateFieldLabel("完成方式", new Point(30, 374)));
+        Controls.Add(_actionKindComboBox);
+        Controls.Add(_activitySecondsLabel);
+        Controls.Add(_activitySecondsInput);
+        Controls.Add(_activitySecondsUnitLabel);
+        Controls.Add(_autoStartLabel);
+        Controls.Add(_autoStartSwitch);
+        Controls.Add(CreateFieldLabel("啟用提醒", new Point(30, 474)));
         Controls.Add(_enabledSwitch);
-        Controls.Add(CreateFieldLabel("播放音效", new Point(260, 366)));
+        Controls.Add(CreateFieldLabel("播放音效", new Point(260, 474)));
         Controls.Add(_soundSwitch);
         Controls.Add(cancelButton);
         Controls.Add(saveButton);
 
         AcceptButton = saveButton;
         CancelButton = cancelButton;
-
         LoadValues();
     }
 
@@ -123,9 +163,31 @@ public sealed class ReminderEditorForm : Form
         _messageTextBox.Text = _workingItem.Message;
         _enabledSwitch.Checked = _workingItem.IsEnabled;
         _soundSwitch.Checked = _workingItem.PlaySound;
+        _autoStartSwitch.Checked = _workingItem.AutoStartActivity;
+        _intervalInput.Value = Math.Clamp(_workingItem.IntervalMinutes, 1, 1440);
+        _activitySecondsInput.Value = Math.Clamp(_workingItem.ActivityDurationSeconds, 5, 3600);
+        _oneTimeInput.Value = ClampDateTime(_workingItem.OneTimeAtLocal ?? DateTime.Now.AddHours(1));
+        _scheduleKindComboBox.SelectedIndex = (int)_workingItem.ScheduleKind;
+        _actionKindComboBox.SelectedIndex = (int)_workingItem.ActionKind;
 
         var emojiIndex = _emojiComboBox.Items.IndexOf(_workingItem.Emoji);
         _emojiComboBox.SelectedIndex = emojiIndex >= 0 ? emojiIndex : 3;
+        UpdateConditionalFields();
+    }
+
+    private void UpdateConditionalFields()
+    {
+        var isOneTime = _scheduleKindComboBox.SelectedIndex == (int)ReminderScheduleKind.OneTime;
+        _intervalInput.Visible = !isOneTime;
+        _intervalUnitLabel.Visible = !isOneTime;
+        _oneTimeInput.Visible = isOneTime;
+
+        var isTimed = _actionKindComboBox.SelectedIndex == (int)ReminderActionKind.TimedActivity;
+        _activitySecondsLabel.Visible = isTimed;
+        _activitySecondsInput.Visible = isTimed;
+        _activitySecondsUnitLabel.Visible = isTimed;
+        _autoStartLabel.Visible = isTimed;
+        _autoStartSwitch.Visible = isTimed;
     }
 
     private void SaveButton_Click(object? sender, EventArgs e)
@@ -144,10 +206,24 @@ public sealed class ReminderEditorForm : Form
             return;
         }
 
+        var scheduleKind = (ReminderScheduleKind)Math.Max(0, _scheduleKindComboBox.SelectedIndex);
+        if (scheduleKind == ReminderScheduleKind.OneTime && _enabledSwitch.Checked && _oneTimeInput.Value <= DateTime.Now)
+        {
+            ShowValidationMessage("一次性提醒時間必須晚於現在。", _oneTimeInput);
+            return;
+        }
+
         _workingItem.Name = name;
         _workingItem.Message = message;
         _workingItem.Emoji = _emojiComboBox.SelectedItem?.ToString() ?? "💡";
+        _workingItem.ScheduleKind = scheduleKind;
         _workingItem.IntervalMinutes = (int)_intervalInput.Value;
+        _workingItem.OneTimeAtLocal = scheduleKind == ReminderScheduleKind.OneTime
+            ? _oneTimeInput.Value
+            : null;
+        _workingItem.ActionKind = (ReminderActionKind)Math.Max(0, _actionKindComboBox.SelectedIndex);
+        _workingItem.ActivityDurationSeconds = (int)_activitySecondsInput.Value;
+        _workingItem.AutoStartActivity = _workingItem.ActionKind == ReminderActionKind.TimedActivity && _autoStartSwitch.Checked;
         _workingItem.IsEnabled = _enabledSwitch.Checked;
         _workingItem.PlaySound = _soundSwitch.Checked;
         DialogResult = DialogResult.OK;
@@ -168,6 +244,9 @@ public sealed class ReminderEditorForm : Form
             Name = "新提醒",
             Message = "該休息一下囉！",
             IntervalMinutes = 30,
+            ScheduleKind = ReminderScheduleKind.Interval,
+            ActionKind = ReminderActionKind.Manual,
+            ActivityDurationSeconds = 20,
             Emoji = "💡",
             IsEnabled = true,
             PlaySound = true
@@ -183,10 +262,22 @@ public sealed class ReminderEditorForm : Form
             Name = source.Name,
             Message = source.Message,
             IntervalMinutes = source.IntervalMinutes,
+            ScheduleKind = source.ScheduleKind,
+            OneTimeAtLocal = source.OneTimeAtLocal,
+            ActionKind = source.ActionKind,
+            ActivityDurationSeconds = source.ActivityDurationSeconds,
+            AutoStartActivity = source.AutoStartActivity,
             IsEnabled = source.IsEnabled,
             PlaySound = source.PlaySound,
             Emoji = source.Emoji
         };
+    }
+
+    private static DateTime ClampDateTime(DateTime value)
+    {
+        if (value < DateTimePicker.MinimumDateTime) return DateTimePicker.MinimumDateTime;
+        if (value > DateTimePicker.MaximumDateTime) return DateTimePicker.MaximumDateTime;
+        return value;
     }
 
     private static Label CreateFieldLabel(string text, Point location)
@@ -198,6 +289,28 @@ public sealed class ReminderEditorForm : Form
             Font = new Font(AppTheme.FontFamily, 9F, FontStyle.Bold),
             ForeColor = AppTheme.PrimaryText,
             Text = text
+        };
+    }
+
+    private static Label CreateMutedLabel(string text, Point location)
+    {
+        return new Label
+        {
+            AutoSize = true,
+            Location = location,
+            ForeColor = AppTheme.SecondaryText,
+            Text = text
+        };
+    }
+
+    private static ComboBox CreateComboBox(Point location, Size size)
+    {
+        return new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = location,
+            Size = size,
+            Font = new Font(AppTheme.FontFamily, 9.5F)
         };
     }
 

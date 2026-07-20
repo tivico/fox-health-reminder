@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using HealthReminder.Controls;
 using HealthReminder.Models;
 using HealthReminder.UI;
 
@@ -16,7 +17,8 @@ public enum ReminderPopupAction
 public sealed record ReminderPopupRequest(
     ReminderItem Item,
     string OccurrenceId,
-    int SnoozeMinutes);
+    int SnoozeMinutes,
+    bool ReduceMotion = false);
 
 public sealed class ReminderPopupActionEventArgs : EventArgs
 {
@@ -40,13 +42,26 @@ public sealed class ReminderPopupForm : Form
     private readonly Screen _screen;
     private readonly System.Windows.Forms.Timer _animationTimer;
     private readonly System.Windows.Forms.Timer _autoCloseTimer;
+    private readonly System.Windows.Forms.Timer _activityTimer;
+    private readonly System.Windows.Forms.Timer _successTimer;
+    private readonly System.Windows.Forms.Timer _foxDialogueTimer;
     private readonly Stopwatch _animationWatch = new();
+    private FoxAnimationControl? _foxAnimation;
+    private Label? _messageLabel;
+    private Label? _activityStatusLabel;
+    private ProgressBar? _activityProgress;
+    private Button? _primaryButton;
+    private Button? _snoozeButton;
+    private Button? _dismissButton;
     private Rectangle _targetBounds;
     private int _animationStartY;
     private int _animationEndY;
     private bool _isClosing;
     private bool _actionRaised;
     private bool _suppressAction;
+    private bool _activityStarted;
+    private DateTimeOffset _activityEndsAtUtc;
+    private int _foxDialogueStep;
     private ReminderPopupAction _closingAction;
 
     public ReminderPopupForm(ReminderPopupRequest request, Screen screen)
@@ -63,7 +78,7 @@ public sealed class ReminderPopupForm : Form
         DoubleBuffered = true;
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = AppTheme.CardBackground;
-        ClientSize = new Size(390, 208);
+        ClientSize = new Size(420, 242);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -76,6 +91,28 @@ public sealed class ReminderPopupForm : Form
         _animationTimer.Tick += AnimationTimer_Tick;
         _autoCloseTimer = new System.Windows.Forms.Timer { Interval = 12000 };
         _autoCloseTimer.Tick += (_, _) => BeginClose(ReminderPopupAction.TimedOut);
+        _activityTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _activityTimer.Tick += ActivityTimer_Tick;
+        _successTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _successTimer.Tick += (_, _) =>
+        {
+            _successTimer.Stop();
+            BeginClose(ReminderPopupAction.Completed);
+        };
+        _foxDialogueTimer = new System.Windows.Forms.Timer { Interval = 700 };
+        _foxDialogueTimer.Tick += (_, _) =>
+        {
+            if (_foxDialogueStep == 0)
+            {
+                _foxAnimation?.Play(FoxAnimationState.Talk);
+                _foxDialogueStep = 1;
+            }
+            else
+            {
+                _foxAnimation?.Play(FoxAnimationState.Wait);
+                _foxDialogueTimer.Stop();
+            }
+        };
     }
 
     public event EventHandler<ReminderPopupActionEventArgs>? ActionSelected;
@@ -108,7 +145,21 @@ public sealed class ReminderPopupForm : Form
 
         _animationStartY = workArea.Bottom + margin;
         _animationEndY = _targetBounds.Top;
+        if (_request.ReduceMotion)
+        {
+            Bounds = _targetBounds;
+            Opacity = 1;
+            if (_foxAnimation != null) _foxAnimation.AnimationEnabled = false;
+            _autoCloseTimer.Start();
+            if (_request.Item.ActionKind == ReminderActionKind.TimedActivity && _request.Item.AutoStartActivity)
+            {
+                StartActivity();
+            }
+            return;
+        }
+
         Location = new Point(_targetBounds.Left, _animationStartY);
+        _foxAnimation?.Play(FoxAnimationState.RollIn);
         BeginAnimation();
     }
 
@@ -121,65 +172,96 @@ public sealed class ReminderPopupForm : Form
             Width = 6
         };
 
-        var emoji = new Label
+        _foxAnimation = new FoxAnimationControl
         {
-            AutoSize = false,
-            Location = new Point(24, 20),
-            Size = new Size(48, 48),
-            Font = new Font(AppTheme.FontFamily, 24F),
-            Text = _request.Item.Emoji,
-            TextAlign = ContentAlignment.MiddleCenter
+            Location = new Point(14, 24),
+            Size = new Size(108, 116)
         };
         var title = new Label
         {
             AutoEllipsis = true,
-            Location = new Point(82, 20),
-            Size = new Size(278, 28),
+            Location = new Point(130, 20),
+            Size = new Size(262, 28),
             Font = new Font(AppTheme.FontFamily, 12F, FontStyle.Bold),
             ForeColor = AppTheme.PrimaryText,
-            Text = _request.Item.Name
+            Text = $"{_request.Item.Emoji} {_request.Item.Name}"
         };
-        var message = new Label
+        _messageLabel = new Label
         {
             AutoEllipsis = true,
-            Location = new Point(84, 52),
-            Size = new Size(278, 48),
+            Location = new Point(132, 52),
+            Size = new Size(260, 50),
             Font = new Font(AppTheme.FontFamily, 9.5F),
             ForeColor = AppTheme.SecondaryText,
             Text = _request.Item.Message
         };
 
-        var completeButton = CreateActionButton(
-            "完成",
+        _activityStatusLabel = new Label
+        {
+            AutoEllipsis = true,
+            Location = new Point(132, 108),
+            Size = new Size(260, 22),
+            Font = new Font(AppTheme.FontFamily, 8.5F, FontStyle.Bold),
+            ForeColor = AppTheme.Primary,
+            Text = _request.Item.ActionKind == ReminderActionKind.TimedActivity
+                ? $"準備好後開始 {_request.Item.ActivityDurationSeconds} 秒活動"
+                : "完成後告訴小狐狸一聲吧"
+        };
+        _activityProgress = new ProgressBar
+        {
+            Location = new Point(132, 134),
+            Size = new Size(260, 12),
+            Minimum = 0,
+            Maximum = Math.Max(1, _request.Item.ActivityDurationSeconds * 10),
+            Style = ProgressBarStyle.Continuous,
+            Visible = _request.Item.ActionKind == ReminderActionKind.TimedActivity
+        };
+
+        _primaryButton = CreateActionButton(
+            _request.Item.ActionKind == ReminderActionKind.TimedActivity
+                ? $"開始 {_request.Item.ActivityDurationSeconds} 秒"
+                : "完成",
             AppTheme.Healthy,
             Color.White,
-            (_, _) => BeginClose(ReminderPopupAction.Completed));
-        completeButton.Location = new Point(24, 142);
-        completeButton.Size = new Size(100, 40);
+            (_, _) =>
+            {
+                if (_request.Item.ActionKind == ReminderActionKind.TimedActivity)
+                {
+                    StartActivity();
+                }
+                else
+                {
+                    CompleteManualAction();
+                }
+            });
+        _primaryButton.Location = new Point(24, 178);
+        _primaryButton.Size = new Size(116, 40);
 
-        var snoozeButton = CreateActionButton(
+        _snoozeButton = CreateActionButton(
             $"稍後 {_request.SnoozeMinutes} 分",
             AppTheme.SelectedBackground,
             AppTheme.Primary,
             (_, _) => BeginClose(ReminderPopupAction.Snoozed));
-        snoozeButton.Location = new Point(134, 142);
-        snoozeButton.Size = new Size(128, 40);
+        _snoozeButton.Location = new Point(150, 178);
+        _snoozeButton.Size = new Size(130, 40);
 
-        var dismissButton = CreateActionButton(
+        _dismissButton = CreateActionButton(
             "略過",
             Color.FromArgb(244, 240, 237),
             AppTheme.SecondaryText,
             (_, _) => BeginClose(ReminderPopupAction.Dismissed));
-        dismissButton.Location = new Point(272, 142);
-        dismissButton.Size = new Size(88, 40);
+        _dismissButton.Location = new Point(290, 178);
+        _dismissButton.Size = new Size(102, 40);
 
         Controls.Add(accent);
-        Controls.Add(emoji);
+        Controls.Add(_foxAnimation);
         Controls.Add(title);
-        Controls.Add(message);
-        Controls.Add(completeButton);
-        Controls.Add(snoozeButton);
-        Controls.Add(dismissButton);
+        Controls.Add(_messageLabel);
+        Controls.Add(_activityStatusLabel);
+        Controls.Add(_activityProgress);
+        Controls.Add(_primaryButton);
+        Controls.Add(_snoozeButton);
+        Controls.Add(_dismissButton);
     }
 
     private static Button CreateActionButton(
@@ -202,6 +284,115 @@ public sealed class ReminderPopupForm : Form
         button.Click += onClick;
         button.Resize += (_, _) => ApplyRoundedRegion(button, 9);
         return button;
+    }
+
+    private void StartActivity()
+    {
+        if (_activityStarted || _isClosing || _request.Item.ActionKind != ReminderActionKind.TimedActivity)
+        {
+            return;
+        }
+
+        _activityStarted = true;
+        var durationSeconds = Math.Clamp(_request.Item.ActivityDurationSeconds, 5, 3600);
+        _activityEndsAtUtc = DateTimeOffset.UtcNow.AddSeconds(durationSeconds);
+        _autoCloseTimer.Stop();
+        _successTimer.Stop();
+        _foxDialogueTimer.Stop();
+        _foxAnimation?.Play(FoxAnimationState.Wait);
+
+        if (_primaryButton != null)
+        {
+            _primaryButton.Text = "進行中…";
+            _primaryButton.Enabled = false;
+        }
+        if (_snoozeButton != null)
+        {
+            _snoozeButton.Enabled = false;
+        }
+        if (_dismissButton != null)
+        {
+            _dismissButton.Text = "停止並略過";
+        }
+
+        UpdateActivityProgress();
+        _activityTimer.Start();
+    }
+
+    private void CompleteManualAction()
+    {
+        if (_isClosing) return;
+
+        _autoCloseTimer.Stop();
+        _foxDialogueTimer.Stop();
+        _foxAnimation?.Play(FoxAnimationState.Celebrate);
+        if (_activityStatusLabel != null)
+        {
+            _activityStatusLabel.Text = "收到！這次任務已記錄完成";
+            _activityStatusLabel.ForeColor = AppTheme.Healthy;
+        }
+        if (_primaryButton != null)
+        {
+            _primaryButton.Text = "✓ 已完成";
+            _primaryButton.Enabled = false;
+        }
+        if (_snoozeButton != null) _snoozeButton.Enabled = false;
+        if (_dismissButton != null) _dismissButton.Enabled = false;
+        _successTimer.Start();
+    }
+
+    private void ActivityTimer_Tick(object? sender, EventArgs e)
+    {
+        UpdateActivityProgress();
+    }
+
+    private void UpdateActivityProgress()
+    {
+        if (!_activityStarted || _activityProgress == null || _activityStatusLabel == null) return;
+
+        var durationSeconds = Math.Clamp(_request.Item.ActivityDurationSeconds, 5, 3600);
+        var remaining = _activityEndsAtUtc - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            CompleteActivity();
+            return;
+        }
+
+        var elapsedTenths = (int)Math.Round((durationSeconds - remaining.TotalSeconds) * 10);
+        _activityProgress.Value = Math.Clamp(elapsedTenths, 0, _activityProgress.Maximum);
+        _activityStatusLabel.Text = $"還有 {Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds))} 秒 · 放鬆眼睛與肩膀";
+    }
+
+    private void CompleteActivity()
+    {
+        if (!_activityStarted) return;
+
+        _activityStarted = false;
+        _activityTimer.Stop();
+        _foxDialogueTimer.Stop();
+        _foxAnimation?.Play(FoxAnimationState.Celebrate);
+        if (_activityProgress != null)
+        {
+            _activityProgress.Value = _activityProgress.Maximum;
+        }
+        if (_activityStatusLabel != null)
+        {
+            _activityStatusLabel.Text = "完成！小狐狸替你拍拍手";
+            _activityStatusLabel.ForeColor = AppTheme.Healthy;
+        }
+        if (_messageLabel != null)
+        {
+            _messageLabel.Text = "做得很好，這次活動已經記錄完成。";
+        }
+        if (_primaryButton != null)
+        {
+            _primaryButton.Text = "✓ 已完成";
+        }
+        if (_dismissButton != null)
+        {
+            _dismissButton.Enabled = false;
+        }
+        _successTimer.Start();
     }
 
     private void BeginAnimation()
@@ -234,7 +425,14 @@ public sealed class ReminderPopupForm : Form
         {
             Top = _targetBounds.Top;
             Opacity = 1;
+            _foxAnimation?.Play(FoxAnimationState.Wave);
+            _foxDialogueStep = 0;
+            _foxDialogueTimer.Start();
             _autoCloseTimer.Start();
+            if (_request.Item.ActionKind == ReminderActionKind.TimedActivity && _request.Item.AutoStartActivity)
+            {
+                StartActivity();
+            }
         }
     }
 
@@ -245,6 +443,15 @@ public sealed class ReminderPopupForm : Form
         _isClosing = true;
         _closingAction = action;
         _autoCloseTimer.Stop();
+        _activityTimer.Stop();
+        _successTimer.Stop();
+        _foxDialogueTimer.Stop();
+        if (_request.ReduceMotion)
+        {
+            RaiseActionAndClose();
+            return;
+        }
+        _foxAnimation?.Play(FoxAnimationState.RollOut);
         _animationStartY = Top;
         _animationEndY = _targetBounds.Top + 36;
         BeginAnimation();
@@ -295,6 +502,9 @@ public sealed class ReminderPopupForm : Form
     {
         _animationTimer.Dispose();
         _autoCloseTimer.Dispose();
+        _activityTimer.Dispose();
+        _successTimer.Dispose();
+        _foxDialogueTimer.Dispose();
         base.OnFormClosed(e);
     }
 

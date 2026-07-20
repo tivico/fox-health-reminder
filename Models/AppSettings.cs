@@ -5,6 +5,13 @@ namespace HealthReminder.Models;
 /// </summary>
 public class AppSettings
 {
+    public const int CurrentSchemaVersion = 2;
+
+    /// <summary>
+    /// 設定結構版本，用於一次性、可追蹤的資料遷移。
+    /// </summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
     /// <summary>
     /// 所有提醒項目
     /// </summary>
@@ -49,4 +56,9 @@ public class AppSettings
     /// 是否顯示倒數計時
     /// </summary>
     public bool ShowCountdown { get; set; } = true;
+
+    /// <summary>
+    /// 關閉位移與逐格動畫，但保留文字與操作回饋。
+    /// </summary>
+    public bool ReduceMotion { get; set; }
 }

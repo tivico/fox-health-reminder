@@ -58,7 +58,14 @@ public class ReminderTimer : IDisposable
         if (DateTimeOffset.UtcNow >= _nextTriggerUtc)
         {
             OnTriggered?.Invoke(this, Item);
-            ResetTimer();
+            if (Item.ScheduleKind == ReminderScheduleKind.OneTime)
+            {
+                _timer.Stop();
+            }
+            else
+            {
+                ResetTimer();
+            }
         }
     }
 
@@ -67,7 +74,9 @@ public class ReminderTimer : IDisposable
     /// </summary>
     public void ResetTimer()
     {
-        _nextTriggerUtc = DateTimeOffset.UtcNow.AddMinutes(Item.IntervalMinutes);
+        _nextTriggerUtc = Item.ScheduleKind == ReminderScheduleKind.OneTime
+            ? ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now.AddMinutes(Item.IntervalMinutes))
+            : DateTimeOffset.UtcNow.AddMinutes(Item.IntervalMinutes);
     }
 
     /// <summary>
@@ -76,6 +85,8 @@ public class ReminderTimer : IDisposable
     public void Snooze(int minutes)
     {
         _nextTriggerUtc = DateTimeOffset.UtcNow.AddMinutes(minutes);
+        Item.IsEnabled = true;
+        _timer.Start();
     }
 
     /// <summary>
@@ -111,7 +122,9 @@ public class ReminderTimer : IDisposable
         if (!_pauseReasons.Remove(reason)) return;
         if (IsPaused) return;
 
-        _nextTriggerUtc = DateTimeOffset.UtcNow.Add(_remainingWhenPaused);
+        _nextTriggerUtc = Item.ScheduleKind == ReminderScheduleKind.OneTime
+            ? ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now)
+            : DateTimeOffset.UtcNow.Add(_remainingWhenPaused);
     }
 
     /// <summary>
@@ -123,6 +136,12 @@ public class ReminderTimer : IDisposable
         if (IsPaused) return;
 
         var now = DateTimeOffset.UtcNow;
+        if (Item.ScheduleKind == ReminderScheduleKind.OneTime)
+        {
+            _nextTriggerUtc = ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now);
+            return;
+        }
+
         var maximumRemaining = TimeSpan.FromMinutes(Math.Max(1, Item.IntervalMinutes));
         if (_nextTriggerUtc - now > maximumRemaining)
         {
@@ -145,6 +164,25 @@ public class ReminderTimer : IDisposable
     {
         Item = item;
         ResetTimer();
+    }
+
+    private static DateTimeOffset ConvertLocalToUtc(DateTime localDateTime)
+    {
+        var unspecifiedLocal = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
+        for (var minute = 0; minute < 120 && TimeZoneInfo.Local.IsInvalidTime(unspecifiedLocal); minute++)
+        {
+            unspecifiedLocal = unspecifiedLocal.AddMinutes(1);
+        }
+
+        try
+        {
+            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecifiedLocal, TimeZoneInfo.Local);
+            return new DateTimeOffset(utc, TimeSpan.Zero);
+        }
+        catch (ArgumentException)
+        {
+            return DateTimeOffset.UtcNow;
+        }
     }
 
     public void Dispose()
@@ -242,6 +280,11 @@ public class ReminderService : IDisposable
                 if (!_isInDoNotDisturbMode && !IsPausedAll)
                 {
                     var occurrence = SettingsManager.Instance.AddTriggeredRecord(item);
+                    if (item.ScheduleKind == ReminderScheduleKind.OneTime)
+                    {
+                        item.IsEnabled = false;
+                        SettingsManager.Instance.Save();
+                    }
                     OnReminderTriggered?.Invoke(
                         this,
                         new ReminderTriggeredEventArgs(item, occurrence.Id));
@@ -297,6 +340,10 @@ public class ReminderService : IDisposable
         }
 
         var snoozeMinutes = SettingsManager.Instance.Settings.SnoozeMinutes;
+        if (timer.Item.ScheduleKind == ReminderScheduleKind.OneTime)
+        {
+            timer.Item.OneTimeAtLocal = DateTime.Now.AddMinutes(snoozeMinutes);
+        }
         timer.Snooze(snoozeMinutes);
         return SettingsManager.Instance.UpdateRecordStatus(
             occurrenceId,

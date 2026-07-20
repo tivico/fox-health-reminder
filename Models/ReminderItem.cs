@@ -12,6 +12,24 @@ public enum ReminderType
 }
 
 /// <summary>
+/// 提醒何時觸發。類型只描述排程，不綁定任何特定健康任務。
+/// </summary>
+public enum ReminderScheduleKind
+{
+    Interval,
+    OneTime
+}
+
+/// <summary>
+/// 使用者如何完成一次提醒。
+/// </summary>
+public enum ReminderActionKind
+{
+    Manual,
+    TimedActivity
+}
+
+/// <summary>
 /// 單一提醒項目的設定
 /// </summary>
 public class ReminderItem
@@ -40,6 +58,31 @@ public class ReminderItem
     /// 間隔時間（分鐘）
     /// </summary>
     public int IntervalMinutes { get; set; } = 60;
+
+    /// <summary>
+    /// 持續間隔或一次性排程。
+    /// </summary>
+    public ReminderScheduleKind ScheduleKind { get; set; } = ReminderScheduleKind.Interval;
+
+    /// <summary>
+    /// 一次性排程的本機日期時間；舊設定或間隔排程可為 null。
+    /// </summary>
+    public DateTime? OneTimeAtLocal { get; set; }
+
+    /// <summary>
+    /// 手動完成或計時活動。
+    /// </summary>
+    public ReminderActionKind ActionKind { get; set; } = ReminderActionKind.Manual;
+
+    /// <summary>
+    /// 計時活動長度（秒）。
+    /// </summary>
+    public int ActivityDurationSeconds { get; set; } = 20;
+
+    /// <summary>
+    /// 通知顯示完進場動畫後是否自動開始計時活動。
+    /// </summary>
+    public bool AutoStartActivity { get; set; }
 
     /// <summary>
     /// 是否啟用
@@ -77,7 +120,9 @@ public class ReminderItem
                 Name = "眼睛休息",
                 Message = "讓眼睛休息一下！看看遠方 20 秒 👀",
                 IntervalMinutes = 20,
-                Emoji = "👀"
+                Emoji = "👀",
+                ActionKind = ReminderActionKind.TimedActivity,
+                ActivityDurationSeconds = 20
             },
             new ReminderItem
             {

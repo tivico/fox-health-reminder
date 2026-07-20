@@ -6,7 +6,11 @@ var checks = new List<(string Name, Action Run)>
     ("統計只將 Completed 狀態計為完成", VerifyStatisticsStatuses),
     ("舊版 Completed/Snoozed 欄位可遷移", VerifyLegacyStatusCompatibility),
     ("預設提醒具有唯一識別碼", VerifyDefaultReminderIds),
-    ("內建提醒去重但保留多個自訂提醒", VerifyReminderNormalization),
+    ("提醒只修復重複 Id，不限制範本數量", VerifyReminderNormalization),
+    ("四種排程與完成方式組合皆可保存", VerifyGeneralTaskCombinations),
+    ("護眼預設為 20 秒計時活動", VerifyDefaultEyeActivity),
+    ("一次性提醒使用指定的絕對時間", VerifyOneTimeDeadline),
+    ("一次性提醒稍後會重新啟用", VerifyOneTimeSnooze),
     ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime),
     ("手動、勿擾與暫時暫停互不覆蓋", VerifyIndependentPauseReasons)
 };
@@ -81,10 +85,70 @@ static void VerifyReminderNormalization()
 
     var result = ReminderCollectionNormalizer.Normalize(reminders);
     Equal(true, result.Changed);
-    Equal(3, result.Reminders.Count);
-    Equal(1, result.Reminders.Count(item => item.Type == ReminderType.Water));
+    Equal(4, result.Reminders.Count);
+    Equal(2, result.Reminders.Count(item => item.Type == ReminderType.Water));
     Equal(2, result.Reminders.Count(item => item.Type == ReminderType.Custom));
-    Equal(3, result.Reminders.Select(item => item.Id).Distinct().Count());
+    Equal(4, result.Reminders.Select(item => item.Id).Distinct().Count());
+}
+
+static void VerifyGeneralTaskCombinations()
+{
+    var oneTime = DateTime.Now.AddHours(1);
+    var reminders = new List<ReminderItem>
+    {
+        new() { ScheduleKind = ReminderScheduleKind.Interval, ActionKind = ReminderActionKind.Manual },
+        new() { ScheduleKind = ReminderScheduleKind.Interval, ActionKind = ReminderActionKind.TimedActivity, ActivityDurationSeconds = 30 },
+        new() { ScheduleKind = ReminderScheduleKind.OneTime, OneTimeAtLocal = oneTime, ActionKind = ReminderActionKind.Manual },
+        new() { ScheduleKind = ReminderScheduleKind.OneTime, OneTimeAtLocal = oneTime, ActionKind = ReminderActionKind.TimedActivity, ActivityDurationSeconds = 45, AutoStartActivity = true }
+    };
+
+    var result = ReminderCollectionNormalizer.Normalize(reminders);
+    Equal(4, result.Reminders.Count);
+    Equal(2, result.Reminders.Count(item => item.ScheduleKind == ReminderScheduleKind.OneTime));
+    Equal(2, result.Reminders.Count(item => item.ActionKind == ReminderActionKind.TimedActivity));
+    Equal(true, result.Reminders.Last().AutoStartActivity);
+}
+
+static void VerifyDefaultEyeActivity()
+{
+    var eyeRest = ReminderItem.GetDefaults().Single(item => item.Type == ReminderType.EyeRest);
+    Equal(ReminderActionKind.TimedActivity, eyeRest.ActionKind);
+    Equal(20, eyeRest.ActivityDurationSeconds);
+    Equal(false, eyeRest.AutoStartActivity);
+}
+
+static void VerifyOneTimeDeadline()
+{
+    var target = DateTime.Now.AddMinutes(5);
+    using var timer = new ReminderTimer(new ReminderItem
+    {
+        ScheduleKind = ReminderScheduleKind.OneTime,
+        OneTimeAtLocal = target
+    });
+    timer.Start();
+
+    if (Math.Abs((timer.NextTriggerTime - target).TotalSeconds) > 2)
+    {
+        throw new InvalidOperationException("一次性提醒沒有保留指定的本機時間。");
+    }
+}
+
+static void VerifyOneTimeSnooze()
+{
+    var item = new ReminderItem
+    {
+        ScheduleKind = ReminderScheduleKind.OneTime,
+        OneTimeAtLocal = DateTime.Now.AddMinutes(1),
+        IsEnabled = false
+    };
+    using var timer = new ReminderTimer(item);
+    timer.Snooze(10);
+
+    Equal(true, item.IsEnabled);
+    if (timer.RemainingTime < TimeSpan.FromMinutes(9.9))
+    {
+        throw new InvalidOperationException("稍後提醒沒有建立新的期限。");
+    }
 }
 
 static void VerifyPausePreservesRemainingTime()

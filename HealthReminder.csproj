@@ -27,9 +27,11 @@
     <None Remove="Resources\app.ico" />
     <None Remove="Resources\water.ico" />
     <None Remove="Resources\eye.ico" />
+    <None Remove="Resources\fox-sprites-v2.png" />
     <EmbeddedResource Include="Resources\app.ico" LogicalName="HealthReminder.Resources.app.ico" />
     <EmbeddedResource Include="Resources\water.ico" LogicalName="HealthReminder.Resources.water.ico" />
     <EmbeddedResource Include="Resources\eye.ico" LogicalName="HealthReminder.Resources.eye.ico" />
+    <EmbeddedResource Include="Resources\fox-sprites-v2.png" LogicalName="HealthReminder.Resources.fox-sprites-v2.png" />
   </ItemGroup>
 
 </Project>

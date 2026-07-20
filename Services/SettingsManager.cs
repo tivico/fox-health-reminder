@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using HealthReminder.Models;
 
 namespace HealthReminder.Services;
@@ -70,10 +71,12 @@ public class SettingsManager
             if (File.Exists(SettingsPath))
             {
                 var json = File.ReadAllText(SettingsPath);
+                var storedSchemaVersion = JObject.Parse(json).Value<int?>(nameof(AppSettings.SchemaVersion)) ?? 1;
                 Settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
-                
-                // 內建類型各保留一筆，自訂提醒則可有多筆。
-                settingsChanged = NormalizeReminders();
+                settingsChanged = MigrateSettings(storedSchemaVersion);
+
+                // 修復舊設定欄位與重複 Id；不限制任何提醒範本的數量。
+                settingsChanged |= NormalizeReminders();
             }
 
             // 載入統計資料
@@ -108,6 +111,28 @@ public class SettingsManager
         var result = ReminderCollectionNormalizer.Normalize(Settings.Reminders);
         Settings.Reminders = result.Reminders;
         return result.Changed;
+    }
+
+    private bool MigrateSettings(int storedSchemaVersion)
+    {
+        var changed = false;
+        if (storedSchemaVersion < 2)
+        {
+            foreach (var item in Settings.Reminders.Where(item => item.Type == ReminderType.EyeRest))
+            {
+                item.ActionKind = ReminderActionKind.TimedActivity;
+                item.ActivityDurationSeconds = 20;
+                item.AutoStartActivity = false;
+            }
+            changed = true;
+        }
+
+        if (Settings.SchemaVersion != AppSettings.CurrentSchemaVersion)
+        {
+            Settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
+            changed = true;
+        }
+        return changed;
     }
 
     /// <summary>

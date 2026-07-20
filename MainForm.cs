@@ -31,6 +31,9 @@ public partial class MainForm : Form
     private FlowLayoutPanel? _reminderCardsFlow;
     private FlowLayoutPanel? _countdownCardsFlow;
     private readonly Dictionary<string, ReminderCountdownCard> _countdownCards = new();
+    private Label? _settingsFeedbackLabel;
+    private System.Windows.Forms.Timer? _settingsFeedbackTimer;
+    private CheckBox? _reduceMotionCheckBox;
 
     // 多圖示支援
     private Icon? _mainIcon;      // 主圖示（小狐狸）
@@ -163,10 +166,13 @@ public partial class MainForm : Form
                     Name = "小狐狸提醒你",
                     Message = "起身伸展一下，讓肩膀和眼睛都休息一會兒。",
                     Emoji = "🦊",
-                    PlaySound = false
+                    PlaySound = false,
+                    ActionKind = ReminderActionKind.TimedActivity,
+                    ActivityDurationSeconds = 8
                 },
                 PreviewNotificationOccurrenceId,
-                SettingsManager.Instance.Settings.SnoozeMinutes));
+                SettingsManager.Instance.Settings.SnoozeMinutes,
+                SettingsManager.Instance.Settings.ReduceMotion));
         }
 
         // 首次使用引導
@@ -189,6 +195,7 @@ public partial class MainForm : Form
             _notificationService.Dispose();
             _systemEventMonitor.Dispose();
             _reminderService.Dispose();
+            _settingsFeedbackTimer?.Dispose();
             notifyIcon.Visible = false;
             notifyIcon.Dispose();
             _stretchIcon?.Dispose();
@@ -285,7 +292,18 @@ public partial class MainForm : Form
         _notificationService.Enqueue(new ReminderPopupRequest(
             item,
             e.OccurrenceId,
-            SettingsManager.Instance.Settings.SnoozeMinutes));
+            SettingsManager.Instance.Settings.SnoozeMinutes,
+            SettingsManager.Instance.Settings.ReduceMotion));
+
+        if (item.ScheduleKind == ReminderScheduleKind.OneTime && _reminderItems != null)
+        {
+            var draft = _reminderItems.FirstOrDefault(reminder => reminder.Id == item.Id);
+            if (draft != null)
+            {
+                draft.IsEnabled = false;
+                RefreshReminderCards();
+            }
+        }
 
         // 播放音效
         if (item.PlaySound)
@@ -331,6 +349,16 @@ public partial class MainForm : Form
                 break;
             case ReminderPopupAction.Snoozed:
                 _reminderService.Snooze(e.Request.Item.Id, e.Request.OccurrenceId);
+                if (e.Request.Item.ScheduleKind == ReminderScheduleKind.OneTime && _reminderItems != null)
+                {
+                    var draft = _reminderItems.FirstOrDefault(item => item.Id == e.Request.Item.Id);
+                    if (draft != null)
+                    {
+                        draft.IsEnabled = true;
+                        draft.OneTimeAtLocal = e.Request.Item.OneTimeAtLocal;
+                        RefreshReminderCards();
+                    }
+                }
                 break;
             case ReminderPopupAction.Dismissed:
                 _reminderService.Dismiss(e.Request.OccurrenceId);
@@ -605,6 +633,10 @@ public partial class MainForm : Form
         chkStartWithWindows.Checked = settings.StartWithWindows;
         chkStartMinimized.Checked = settings.StartMinimized;
         numSnoozeMinutes.Value = settings.SnoozeMinutes;
+        if (_reduceMotionCheckBox != null)
+        {
+            _reduceMotionCheckBox.Checked = settings.ReduceMotion;
+        }
 
         // 勿擾設定
         chkDoNotDisturb.Checked = settings.DoNotDisturbEnabled;
@@ -630,7 +662,7 @@ public partial class MainForm : Form
             SettingsManager.Instance.ResetToDefaults();
             LoadSettingsToUI();
             _reminderService.Reload();
-            MessageBox.Show("已重設為預設值！", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowSettingsFeedback("✓ 已恢復預設值並重新排程", AppTheme.Healthy);
         }
     }
 
@@ -661,6 +693,7 @@ public partial class MainForm : Form
         // 一般設定
         settings.StartMinimized = chkStartMinimized.Checked;
         settings.SnoozeMinutes = (int)numSnoozeMinutes.Value;
+        settings.ReduceMotion = _reduceMotionCheckBox?.Checked ?? false;
 
         // 處理開機自動啟動
         if (chkStartWithWindows.Checked != settings.StartWithWindows)
@@ -686,7 +719,27 @@ public partial class MainForm : Form
 
         _reminderService.Reload();
 
-        MessageBox.Show("設定已儲存！", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        RefreshReminderCards();
+        UpdateCountdownDisplay();
+        ShowSettingsFeedback("✓ 設定已儲存，提醒已重新排程", AppTheme.Healthy);
+    }
+
+    private void ShowSettingsFeedback(string message, Color color)
+    {
+        if (_settingsFeedbackLabel == null) return;
+
+        _settingsFeedbackTimer?.Stop();
+        _settingsFeedbackTimer?.Dispose();
+        _settingsFeedbackLabel.Text = message;
+        _settingsFeedbackLabel.ForeColor = color;
+        _settingsFeedbackLabel.Visible = true;
+        _settingsFeedbackTimer = new System.Windows.Forms.Timer { Interval = 3500 };
+        _settingsFeedbackTimer.Tick += (_, _) =>
+        {
+            _settingsFeedbackTimer?.Stop();
+            _settingsFeedbackLabel.Visible = false;
+        };
+        _settingsFeedbackTimer.Start();
     }
 
     private void RefreshReminderCards()
@@ -769,6 +822,11 @@ public partial class MainForm : Form
             Name = source.Name,
             Message = source.Message,
             IntervalMinutes = source.IntervalMinutes,
+            ScheduleKind = source.ScheduleKind,
+            OneTimeAtLocal = source.OneTimeAtLocal,
+            ActionKind = source.ActionKind,
+            ActivityDurationSeconds = source.ActivityDurationSeconds,
+            AutoStartActivity = source.AutoStartActivity,
             IsEnabled = source.IsEnabled,
             PlaySound = source.PlaySound,
             Emoji = source.Emoji
@@ -790,9 +848,19 @@ public partial class MainForm : Form
                 return "提醒名稱不可空白。";
             }
 
-            if (item.IntervalMinutes is < 1 or > 1440)
+            if (item.ScheduleKind == ReminderScheduleKind.Interval && item.IntervalMinutes is < 1 or > 1440)
             {
                 return $"「{item.Name}」的提醒間隔必須介於 1 到 1440 分鐘。";
+            }
+
+            if (item.ScheduleKind == ReminderScheduleKind.OneTime && item.OneTimeAtLocal == null)
+            {
+                return $"「{item.Name}」需要設定一次性提醒時間。";
+            }
+
+            if (item.ActionKind == ReminderActionKind.TimedActivity && item.ActivityDurationSeconds is < 5 or > 3600)
+            {
+                return $"「{item.Name}」的活動時間必須介於 5 到 3600 秒。";
             }
 
             if (string.IsNullOrWhiteSpace(item.Message))
@@ -815,28 +883,31 @@ public partial class MainForm : Form
         listViewStatistics.BeginUpdate();
         listViewStatistics.Items.Clear();
 
-        // 統計各類型提醒
-        var reminderTypes = new[]
-        {
-            (ReminderType.Water, "💧 喝水提醒"),
-            (ReminderType.EyeRest, "👀 眼睛休息"),
-            (ReminderType.Stretch, "🏃 起身活動"),
-            (ReminderType.Custom, "💡 自訂提醒")
-        };
-
         int totalCompleted = 0;
         int totalCount = 0;
 
-        foreach (var (type, name) in reminderTypes)
+        var configuredItems = SettingsManager.Instance.Settings.Reminders
+            .ToDictionary(item => item.Id, StringComparer.Ordinal);
+        var reminderGroups = today.Records
+            .GroupBy(record => string.IsNullOrWhiteSpace(record.ReminderId)
+                ? $"legacy:{record.Type}:{record.Name}"
+                : record.ReminderId)
+            .OrderBy(group => group.First().Name);
+
+        foreach (var group in reminderGroups)
         {
-            var completed = today.GetCompletedCount(type);
-            var total = today.GetTotalCount(type);
+            var completed = group.Count(record => record.Status == ReminderStatus.Completed);
+            var total = group.Count();
 
             if (total > 0)
             {
-                var rate = total > 0 ? (completed * 100.0 / total) : 0;
+                var rate = completed * 100.0 / total;
+                var firstRecord = group.First();
+                var emoji = configuredItems.TryGetValue(firstRecord.ReminderId, out var configured)
+                    ? configured.Emoji
+                    : "💡";
 
-                var item = new ListViewItem(name);
+                var item = new ListViewItem($"{emoji} {firstRecord.Name}");
                 item.SubItems.Add(completed.ToString());
                 item.SubItems.Add(total.ToString());
                 item.SubItems.Add($"{rate:F0}%");
@@ -890,12 +961,7 @@ public partial class MainForm : Form
     {
         // 簡化版：如果今天有完成至少一個提醒就算 1 天
         var today = SettingsManager.Instance.GetTodayStatistics();
-        int totalCompleted = 0;
-
-        foreach (ReminderType type in Enum.GetValues(typeof(ReminderType)))
-        {
-            totalCompleted += today.GetCompletedCount(type);
-        }
+        var totalCompleted = today.Records.Count(record => record.Status == ReminderStatus.Completed);
 
         return totalCompleted > 0 ? 1 : 0;
     }
@@ -1484,13 +1550,21 @@ public partial class MainForm : Form
         numSnoozeMinutes.Location = new Point(446, 48);
         numSnoozeMinutes.Size = new Size(58, 26);
         lblSnoozeUnit.Location = new Point(510, 52);
+        _reduceMotionCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Location = new Point(568, 50),
+            Text = "減少動畫",
+            UseVisualStyleBackColor = true
+        };
         generalCard.Controls.AddRange(new Control[]
         {
             chkStartWithWindows,
             chkStartMinimized,
             lblSnoozeMinutes,
             numSnoozeMinutes,
-            lblSnoozeUnit
+            lblSnoozeUnit,
+            _reduceMotionCheckBox
         });
 
         var doNotDisturbCard = new CardPanel
@@ -1529,8 +1603,19 @@ public partial class MainForm : Form
         btnResetDefaults.Size = new Size(116, 40);
         btnSaveSettings.Margin = new Padding(8, 0, 0, 0);
         btnResetDefaults.Margin = Padding.Empty;
+        _settingsFeedbackLabel = new Label
+        {
+            AutoSize = false,
+            Size = new Size(330, 40),
+            Margin = new Padding(0, 0, 12, 0),
+            Font = new Font(AppTheme.FontFamily, 9F, FontStyle.Bold),
+            ForeColor = AppTheme.Healthy,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Visible = false
+        };
         actions.Controls.Add(btnSaveSettings);
         actions.Controls.Add(btnResetDefaults);
+        actions.Controls.Add(_settingsFeedbackLabel);
 
         layout.Controls.Add(reminderSection, 0, 0);
         layout.Controls.Add(generalCard, 0, 1);

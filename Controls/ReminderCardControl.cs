@@ -111,7 +111,13 @@ public sealed class ReminderCardControl : UserControl
     {
         _emojiLabel.Text = Item.Emoji;
         _nameLabel.Text = Item.Name;
-        _detailLabel.Text = $"每 {Item.IntervalMinutes} 分鐘 · {(Item.PlaySound ? "播放音效" : "靜音")}";
+        var schedule = Item.ScheduleKind == ReminderScheduleKind.OneTime
+            ? $"一次性 · {Item.OneTimeAtLocal:MM/dd HH:mm}"
+            : $"每 {Item.IntervalMinutes} 分鐘";
+        var action = Item.ActionKind == ReminderActionKind.TimedActivity
+            ? $"計時 {Item.ActivityDurationSeconds} 秒{(Item.AutoStartActivity ? "（自動開始）" : string.Empty)}"
+            : "手動完成";
+        _detailLabel.Text = $"{schedule} · {action} · {(Item.PlaySound ? "有音效" : "靜音")}";
         _messageLabel.Text = Item.Message;
         _enabledSwitch.Checked = Item.IsEnabled;
         Invalidate();
