@@ -24,21 +24,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Resources\app.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="Resources\water.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="Resources\eye.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="Resources\stretch.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="settings.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <None Remove="Resources\app.ico" />
+    <None Remove="Resources\water.ico" />
+    <None Remove="Resources\eye.ico" />
+    <EmbeddedResource Include="Resources\app.ico" LogicalName="HealthReminder.Resources.app.ico" />
+    <EmbeddedResource Include="Resources\water.ico" LogicalName="HealthReminder.Resources.water.ico" />
+    <EmbeddedResource Include="Resources\eye.ico" LogicalName="HealthReminder.Resources.eye.ico" />
   </ItemGroup>
 
 </Project>

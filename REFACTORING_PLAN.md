@@ -423,3 +423,73 @@ Disabled background #F2ECE8
 - [ ] 加入首頁「暫停 30 分鐘／1 小時／今天暫停」快捷操作。
 - [ ] 加入 7 日與 30 日趨勢圖。
 - [ ] 完成 125%、150% 與 200% DPI 實機檢查。
+
+## 11. UI Framework、通知與發佈決策
+
+### UI Framework 決策
+
+- [x] 目前維持 .NET 8 Windows Forms，不為了單一通知動畫全面改寫 WPF。
+- [x] 不採用 WinForms 主程式加 WPF 通知視窗的混合架構，避免兩套 UI Framework 的生命週期、DPI、資源與發佈複雜度。
+- [ ] 若未來確定需要大量頁面轉場、向量角色動畫、完整主題模板及複雜互動圖表，再重新評估完整遷移 WPF。
+- [ ] 若未來評估 WPF，應先確保排程、統計、Persistence 與 Windows 整合均已從 MainForm 拆出，讓 UI 可以替換而不重寫核心功能。
+
+### 自訂動畫通知
+
+- [x] 第一版選擇自訂 WinForms 無邊框通知視窗，不依賴舊式 BalloonTip 作為主要提醒介面。
+- [x] 通知從目前螢幕工作區右下角滑入並淡入，約 200～300ms。
+- [x] 使用 `Stopwatch` 計算動畫進度，避免不同電腦速度造成動畫時間不一致。
+- [x] 提供「完成」、「稍後」、「略過」三個明確按鈕。
+- [x] 同一時間只顯示一張通知，其餘提醒進入佇列。
+- [x] 通知逾時須記錄為 `Missed`，不可自動算完成。
+- [x] 通知不得在顯示時搶走使用者目前輸入焦點。
+- [x] 依主視窗所在螢幕的 DPI、工作列位置與 WorkingArea 定位通知。
+- [x] 勿擾期間不顯示自訂通知；恢復後依排程政策處理。
+- [x] 保留系統托盤圖示與選單，BalloonTip 僅作為啟動提示或必要 fallback。
+
+### 動畫與重繪
+
+- [x] `CardPanel` 啟用 DoubleBuffered。
+- [x] 自訂通知 Form 啟用 `UserPaint`、`AllPaintingInWmPaint`、`OptimizedDoubleBuffer` 與 `ResizeRedraw`。
+- [ ] 避免大量半透明子控制項與持續重繪整個主視窗。
+- [ ] 動畫只用於狀態變更與通知，不加入妨礙操作的裝飾性動畫。
+
+### 睡眠、喚醒與系統時間
+
+- [x] 建立 `WindowsSystemEventMonitor`，訂閱 `SystemEvents.PowerModeChanged` 與 `SystemEvents.TimeChanged`。
+- [x] 收到 `PowerModes.Resume` 時通知 ReminderScheduler 校準所有提醒。
+- [x] 系統時間變更後重新檢查絕對期限，避免提醒延遲一個完整週期。
+- [x] 排程內部使用 UTC 絕對時間，畫面顯示時再轉為本機時間，降低時區切換影響。
+- [x] 使用者暫停與勿擾暫停採不同 pause reason，避免離開勿擾時錯誤恢復使用者手動暫停的提醒。
+- [x] 睡眠期間同類提醒錯過多次時只補一筆，不一次彈出大量通知。
+- [x] Dispose 時解除所有靜態 `SystemEvents` 訂閱。
+
+### 正式發佈設定
+
+正式親友分享版採用：
+
+```xml
+<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+<SelfContained>true</SelfContained>
+<PublishSingleFile>true</PublishSingleFile>
+<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+<PublishTrimmed>false</PublishTrimmed>
+<DebugType>none</DebugType>
+<DebugSymbols>false</DebugSymbols>
+```
+
+- [x] 建立獨立的 `PortableSingleFile.pubxml`，不污染一般 Debug 建置。
+- [x] 將 app、water、eye 等圖示改為 Assembly Embedded Resource，避免單檔旁仍需 `Resources` 資料夾。
+- [ ] 正式分享包預設只包含 EXE 與簡短使用說明。
+- [ ] 實測沒有安裝 .NET Runtime 的 Windows 10／11。
+- [x] 啟用 single-file 壓縮並記錄目前 win-x64 穩定版約 68.5 MB；後續再補無壓縮基準。
+- [x] 第一版保持 `PublishTrimmed=false`；目前 Newtonsoft.Json、WinForms 與反射路徑尚未完成 trimming 相容驗證。
+- [ ] 日後若測試 trimming，使用獨立 `trimmed-experimental` Profile，不直接取代穩定分享版。
+- [ ] 提醒使用者未簽章 EXE 可能觸發 Windows SmartScreen，並評估未來程式碼簽章。
+
+### 可攜模式寫入權限
+
+- [ ] 偵測到 `portable.flag` 時，先在 `Data` 資料夾建立並刪除唯一命名的測試檔。
+- [ ] 若不可寫入，顯示「改用 AppData」或「結束程式」，不可直接崩潰。
+- [ ] 不無聲切換資料位置；畫面必須能查看目前設定與統計實際儲存位置。
+- [ ] 測試位於 `C:\Program Files`、唯讀資料夾、中文路徑與空白路徑時的行為。

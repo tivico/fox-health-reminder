@@ -2,8 +2,10 @@ using System.ComponentModel;
 using System.Data;
 using System.Media;
 using HealthReminder.Models;
+using HealthReminder.Forms;
 using HealthReminder.Services;
 using HealthReminder.UI;
+using HealthReminder.Windows;
 using System.IO;
 
 namespace HealthReminder;
@@ -13,9 +15,10 @@ namespace HealthReminder;
 /// </summary>
 public partial class MainForm : Form
 {
+    private const string PreviewNotificationOccurrenceId = "__preview_notification__";
     private ReminderService _reminderService;
-    private string? _lastTriggeredReminderId;
-    private string? _lastTriggeredOccurrenceId;
+    private readonly WindowsSystemEventMonitor _systemEventMonitor;
+    private readonly NotificationService _notificationService;
     private bool _isReallyClosing = false;
     private readonly List<Button> _navigationButtons = new();
     private Panel? _contentHost;
@@ -34,6 +37,11 @@ public partial class MainForm : Form
     {
         InitializeComponent();
         _reminderService = new ReminderService();
+        _systemEventMonitor = new WindowsSystemEventMonitor();
+        _systemEventMonitor.SystemResumed += SystemEventMonitor_ScheduleChanged;
+        _systemEventMonitor.SystemTimeChanged += SystemEventMonitor_ScheduleChanged;
+        _notificationService = new NotificationService(this);
+        _notificationService.ActionSelected += NotificationService_ActionSelected;
         
         // 載入所有圖示
         LoadIcons();
@@ -50,19 +58,17 @@ public partial class MainForm : Form
     /// </summary>
     private void LoadIcons()
     {
-        string resourcePath = Path.Combine(Application.StartupPath, "Resources");
-
         // 主圖示（小狐狸）
-        _mainIcon = LoadIconSafe(Path.Combine(resourcePath, "app.ico"));
+        _mainIcon = LoadEmbeddedIcon("HealthReminder.Resources.app.ico");
         
         // 喝水圖示（水滴）
-        _waterIcon = LoadIconSafe(Path.Combine(resourcePath, "water.ico"));
+        _waterIcon = LoadEmbeddedIcon("HealthReminder.Resources.water.ico");
         
         // 眼睛休息圖示
-        _eyeIcon = LoadIconSafe(Path.Combine(resourcePath, "eye.ico"));
+        _eyeIcon = LoadEmbeddedIcon("HealthReminder.Resources.eye.ico");
         
-        // 起身活動圖示（可以用主圖示或另外準備）
-        _stretchIcon = LoadIconSafe(Path.Combine(resourcePath, "stretch.ico"));
+        // 尚未提供伸展專用圖示時使用主圖示。
+        _stretchIcon = _mainIcon == null ? null : (Icon)_mainIcon.Clone();
 
         // 設定視窗和托盤的主圖示
         if (_mainIcon != null)
@@ -79,18 +85,19 @@ public partial class MainForm : Form
     /// <summary>
     /// 安全載入圖示（檔案不存在時返回 null）
     /// </summary>
-    private Icon? LoadIconSafe(string path)
+    private Icon? LoadEmbeddedIcon(string resourceName)
     {
         try
         {
-            if (File.Exists(path))
-            {
-                return new Icon(path);
-            }
+            using var stream = typeof(MainForm).Assembly.GetManifestResourceStream(resourceName);
+            if (stream == null) return null;
+
+            using var icon = new Icon(stream);
+            return (Icon)icon.Clone();
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"載入圖示失敗 {path}: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"載入內嵌圖示失敗 {resourceName}: {ex.Message}");
         }
         return null;
     }
@@ -141,6 +148,23 @@ public partial class MainForm : Form
         UpdateCountdownDisplay();
         UpdateStatisticsDisplay();
 
+        if (Environment.GetCommandLineArgs().Any(argument =>
+                argument.Equals("--preview-notification", StringComparison.OrdinalIgnoreCase)))
+        {
+            _notificationService.Enqueue(new ReminderPopupRequest(
+                new ReminderItem
+                {
+                    Id = "preview-reminder",
+                    Type = ReminderType.Custom,
+                    Name = "小狐狸提醒你",
+                    Message = "起身伸展一下，讓肩膀和眼睛都休息一會兒。",
+                    Emoji = "🦊",
+                    PlaySound = false
+                },
+                PreviewNotificationOccurrenceId,
+                SettingsManager.Instance.Settings.SnoozeMinutes));
+        }
+
         // 首次使用引導
         ShowFirstTimeGuide();
     }
@@ -158,9 +182,15 @@ public partial class MainForm : Form
         else
         {
             // 真正關閉時，清理資源
+            _notificationService.Dispose();
+            _systemEventMonitor.Dispose();
             _reminderService.Dispose();
             notifyIcon.Visible = false;
             notifyIcon.Dispose();
+            _stretchIcon?.Dispose();
+            _eyeIcon?.Dispose();
+            _waterIcon?.Dispose();
+            _mainIcon?.Dispose();
         }
     }
 
@@ -178,6 +208,17 @@ public partial class MainForm : Form
 
     #endregion
 
+    private void SystemEventMonitor_ScheduleChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+
+        BeginInvoke(() =>
+        {
+            _reminderService.RecalibrateAfterSystemChange();
+            UpdateCountdownDisplay();
+        });
+    }
+
     #region 系統托盤事件
 
     private void notifyIcon_DoubleClick(object sender, EventArgs e)
@@ -187,14 +228,8 @@ public partial class MainForm : Form
 
     private void notifyIcon_BalloonTipClicked(object sender, EventArgs e)
     {
-        // 點擊通知氣泡時的處理
-        if (!string.IsNullOrEmpty(_lastTriggeredReminderId) &&
-            !string.IsNullOrEmpty(_lastTriggeredOccurrenceId))
-        {
-            ShowReminderActionDialog(
-                _lastTriggeredReminderId,
-                _lastTriggeredOccurrenceId);
-        }
+        // BalloonTip 僅用於啟動／縮小提示，點擊時開啟主視窗。
+        ShowMainForm();
     }
 
     private void menuItemOpen_Click(object sender, EventArgs e)
@@ -237,19 +272,16 @@ public partial class MainForm : Form
         ReminderTriggeredEventArgs e)
     {
         var item = e.Item;
-        _lastTriggeredReminderId = item.Id;
-        _lastTriggeredOccurrenceId = e.OccurrenceId;
 
         // 根據提醒類型切換托盤圖示
         var reminderIcon = GetIconForReminderType(item.Type);
         notifyIcon.Icon = reminderIcon;
 
-        // 顯示通知
-        notifyIcon.ShowBalloonTip(
-            SettingsManager.Instance.Settings.BalloonTipDuration,
-            $"{item.Emoji} {item.Name}",
-            item.Message,
-            ToolTipIcon.None);
+        // 顯示可操作的自訂動畫通知；多筆提醒由 NotificationService 排隊。
+        _notificationService.Enqueue(new ReminderPopupRequest(
+            item,
+            e.OccurrenceId,
+            SettingsManager.Instance.Settings.SnoozeMinutes));
 
         // 播放音效
         if (item.PlaySound)
@@ -277,6 +309,35 @@ public partial class MainForm : Form
 
         // 更新統計顯示
         this.Invoke(() => UpdateStatisticsDisplay());
+    }
+
+    private void NotificationService_ActionSelected(
+        object? sender,
+        ReminderPopupActionEventArgs e)
+    {
+        if (e.Request.OccurrenceId == PreviewNotificationOccurrenceId)
+        {
+            return;
+        }
+
+        switch (e.Action)
+        {
+            case ReminderPopupAction.Completed:
+                _reminderService.MarkCompleted(e.Request.OccurrenceId);
+                break;
+            case ReminderPopupAction.Snoozed:
+                _reminderService.Snooze(e.Request.Item.Id, e.Request.OccurrenceId);
+                break;
+            case ReminderPopupAction.Dismissed:
+                _reminderService.Dismiss(e.Request.OccurrenceId);
+                break;
+            case ReminderPopupAction.TimedOut:
+                _reminderService.MarkMissed(e.Request.OccurrenceId);
+                break;
+        }
+
+        UpdateStatisticsDisplay();
+        UpdateCountdownDisplay();
     }
 
     private void ReminderService_OnCountdownTick(object? sender, EventArgs e)
@@ -1631,36 +1692,6 @@ public partial class MainForm : Form
         this.WindowState = FormWindowState.Normal;
         this.Activate();
         this.BringToFront();
-    }
-
-    private void ShowReminderActionDialog(string reminderId, string occurrenceId)
-    {
-        var timer = _reminderService.GetTimerById(reminderId);
-        if (timer == null) return;
-
-        var result = MessageBox.Show(
-            $"{timer.Item.Message}\n\n選擇「是」表示已完成\n選擇「否」稍後再提醒",
-            $"{timer.Item.Emoji} {timer.Item.Name}",
-            MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Information);
-
-        switch (result)
-        {
-            case DialogResult.Yes:
-                _reminderService.MarkCompleted(occurrenceId);
-                UpdateStatisticsDisplay();
-                break;
-            case DialogResult.No:
-                _reminderService.Snooze(reminderId, occurrenceId);
-                notifyIcon.ShowBalloonTip(1500, "稍後提醒",
-                    $"{SettingsManager.Instance.Settings.SnoozeMinutes} 分鐘後再次提醒您。",
-                    ToolTipIcon.Info);
-                break;
-            case DialogResult.Cancel:
-                _reminderService.Dismiss(occurrenceId);
-                UpdateStatisticsDisplay();
-                break;
-        }
     }
 
     #endregion

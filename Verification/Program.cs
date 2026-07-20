@@ -7,7 +7,8 @@ var checks = new List<(string Name, Action Run)>
     ("舊版 Completed/Snoozed 欄位可遷移", VerifyLegacyStatusCompatibility),
     ("預設提醒具有唯一識別碼", VerifyDefaultReminderIds),
     ("內建提醒去重但保留多個自訂提醒", VerifyReminderNormalization),
-    ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime)
+    ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime),
+    ("使用者暫停與勿擾暫停互不覆蓋", VerifyIndependentPauseReasons)
 };
 
 var failed = 0;
@@ -107,6 +108,20 @@ static void VerifyPausePreservesRemainingTime()
     {
         throw new InvalidOperationException("恢復後沒有延續暫停前的剩餘時間。");
     }
+}
+
+static void VerifyIndependentPauseReasons()
+{
+    using var timer = new ReminderTimer(new ReminderItem { IntervalMinutes = 1 });
+    timer.Start();
+    timer.Pause(ReminderPauseReason.User);
+    timer.Pause(ReminderPauseReason.DoNotDisturb);
+    timer.Resume(ReminderPauseReason.DoNotDisturb);
+
+    Equal(true, timer.IsPaused);
+
+    timer.Resume(ReminderPauseReason.User);
+    Equal(false, timer.IsPaused);
 }
 
 static ReminderRecord NewRecord(ReminderStatus status)

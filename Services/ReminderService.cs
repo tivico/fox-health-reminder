@@ -2,30 +2,37 @@ using HealthReminder.Models;
 
 namespace HealthReminder.Services;
 
+public enum ReminderPauseReason
+{
+    User,
+    DoNotDisturb
+}
+
 /// <summary>
 /// 單一提醒項目的計時器包裝
 /// </summary>
 public class ReminderTimer : IDisposable
 {
     private readonly System.Windows.Forms.Timer _timer;
-    private DateTime _nextTriggerTime;
+    private DateTimeOffset _nextTriggerUtc;
     private TimeSpan _remainingWhenPaused = TimeSpan.Zero;
+    private readonly HashSet<ReminderPauseReason> _pauseReasons = new();
     
     public ReminderItem Item { get; private set; }
-    public bool IsPaused { get; private set; } = false;
+    public bool IsPaused => _pauseReasons.Count > 0;
     
     /// <summary>
     /// 下次觸發時間
     /// </summary>
-    public DateTime NextTriggerTime => _nextTriggerTime;
+    public DateTime NextTriggerTime => _nextTriggerUtc.LocalDateTime;
     
     /// <summary>
     /// 剩餘時間
     /// </summary>
     public TimeSpan RemainingTime => IsPaused
         ? _remainingWhenPaused
-        : _nextTriggerTime > DateTime.Now
-            ? _nextTriggerTime - DateTime.Now
+        : _nextTriggerUtc > DateTimeOffset.UtcNow
+            ? _nextTriggerUtc - DateTimeOffset.UtcNow
             : TimeSpan.Zero;
 
     /// <summary>
@@ -47,7 +54,7 @@ public class ReminderTimer : IDisposable
     {
         if (IsPaused || !Item.IsEnabled) return;
 
-        if (DateTime.Now >= _nextTriggerTime)
+        if (DateTimeOffset.UtcNow >= _nextTriggerUtc)
         {
             OnTriggered?.Invoke(this, Item);
             ResetTimer();
@@ -59,7 +66,7 @@ public class ReminderTimer : IDisposable
     /// </summary>
     public void ResetTimer()
     {
-        _nextTriggerTime = DateTime.Now.AddMinutes(Item.IntervalMinutes);
+        _nextTriggerUtc = DateTimeOffset.UtcNow.AddMinutes(Item.IntervalMinutes);
     }
 
     /// <summary>
@@ -67,7 +74,7 @@ public class ReminderTimer : IDisposable
     /// </summary>
     public void Snooze(int minutes)
     {
-        _nextTriggerTime = DateTime.Now.AddMinutes(minutes);
+        _nextTriggerUtc = DateTimeOffset.UtcNow.AddMinutes(minutes);
     }
 
     /// <summary>
@@ -77,29 +84,49 @@ public class ReminderTimer : IDisposable
     {
         ResetTimer();
         _timer.Start();
-        IsPaused = false;
+        _pauseReasons.Clear();
     }
 
     /// <summary>
     /// 暫停計時
     /// </summary>
-    public void Pause()
+    public void Pause(ReminderPauseReason reason = ReminderPauseReason.User)
     {
-        if (IsPaused) return;
+        if (_pauseReasons.Contains(reason)) return;
 
-        _remainingWhenPaused = RemainingTime;
-        IsPaused = true;
+        if (!IsPaused)
+        {
+            _remainingWhenPaused = RemainingTime;
+        }
+
+        _pauseReasons.Add(reason);
     }
 
     /// <summary>
     /// 恢復計時
     /// </summary>
-    public void Resume()
+    public void Resume(ReminderPauseReason reason = ReminderPauseReason.User)
     {
-        if (!IsPaused) return;
+        if (!_pauseReasons.Remove(reason)) return;
+        if (IsPaused) return;
 
-        _nextTriggerTime = DateTime.Now.Add(_remainingWhenPaused);
-        IsPaused = false;
+        _nextTriggerUtc = DateTimeOffset.UtcNow.Add(_remainingWhenPaused);
+    }
+
+    /// <summary>
+    /// 系統喚醒或時鐘變更後重新檢查期限。
+    /// 過期提醒保留為立即到期；異常遠的未來期限則限制為一個完整週期。
+    /// </summary>
+    public void RecalibrateAfterSystemChange()
+    {
+        if (IsPaused) return;
+
+        var now = DateTimeOffset.UtcNow;
+        var maximumRemaining = TimeSpan.FromMinutes(Math.Max(1, Item.IntervalMinutes));
+        if (_nextTriggerUtc - now > maximumRemaining)
+        {
+            _nextTriggerUtc = now.Add(maximumRemaining);
+        }
     }
 
     /// <summary>
@@ -220,6 +247,10 @@ public class ReminderService : IDisposable
             if (item.IsEnabled)
             {
                 timer.Start();
+                if (IsPausedAll)
+                {
+                    timer.Pause(ReminderPauseReason.User);
+                }
             }
         }
 
@@ -283,6 +314,16 @@ public class ReminderService : IDisposable
     }
 
     /// <summary>
+    /// 將逾時未操作的通知標記為錯過。
+    /// </summary>
+    public bool MarkMissed(string occurrenceId)
+    {
+        return SettingsManager.Instance.UpdateRecordStatus(
+            occurrenceId,
+            ReminderStatus.Missed);
+    }
+
+    /// <summary>
     /// 暫停所有提醒
     /// </summary>
     public void PauseAll()
@@ -290,7 +331,7 @@ public class ReminderService : IDisposable
         IsPausedAll = true;
         foreach (var timer in _timers)
         {
-            timer.Pause();
+            timer.Pause(ReminderPauseReason.User);
         }
     }
 
@@ -304,7 +345,7 @@ public class ReminderService : IDisposable
         {
             if (timer.Item.IsEnabled)
             {
-                timer.Resume();
+                timer.Resume(ReminderPauseReason.User);
             }
         }
     }
@@ -318,30 +359,50 @@ public class ReminderService : IDisposable
     }
 
     /// <summary>
+    /// 在系統喚醒或時間調整後校準所有計時器。
+    /// </summary>
+    public void RecalibrateAfterSystemChange()
+    {
+        CheckDoNotDisturb(null, EventArgs.Empty);
+        foreach (var timer in _timers)
+        {
+            timer.RecalibrateAfterSystemChange();
+        }
+
+        OnCountdownTick?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
     /// 檢查勿擾模式
     /// </summary>
     private void CheckDoNotDisturb(object? sender, EventArgs e)
     {
         var settings = SettingsManager.Instance.Settings;
         
-        if (!settings.DoNotDisturbEnabled)
+        var newMode = false;
+        if (settings.DoNotDisturbEnabled)
         {
-            _isInDoNotDisturbMode = false;
-            return;
+            var now = DateTime.Now.TimeOfDay;
+            var start = settings.DoNotDisturbStart;
+            var end = settings.DoNotDisturbEnd;
+
+            // 處理跨午夜的情況
+            newMode = start < end
+                ? now >= start && now < end
+                : now >= start || now < end;
         }
 
-        var now = DateTime.Now.TimeOfDay;
-        var start = settings.DoNotDisturbStart;
-        var end = settings.DoNotDisturbEnd;
-
-        // 處理跨午夜的情況
-        if (start < end)
+        _isInDoNotDisturbMode = newMode;
+        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
         {
-            _isInDoNotDisturbMode = now >= start && now < end;
-        }
-        else
-        {
-            _isInDoNotDisturbMode = now >= start || now < end;
+            if (newMode)
+            {
+                timer.Pause(ReminderPauseReason.DoNotDisturb);
+            }
+            else
+            {
+                timer.Resume(ReminderPauseReason.DoNotDisturb);
+            }
         }
     }
 
