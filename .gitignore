@@ -1,0 +1,27 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.pdb
+
+# Published application bundles
+publish/
+releases/
+小狐狸在這/
+HealthReminder/小狐狸在這/
+
+# Local runtime data and logs
+Data/
+portable.flag
+*.log
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
