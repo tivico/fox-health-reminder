@@ -6,6 +6,7 @@ var checks = new List<(string Name, Action Run)>
     ("統計只將 Completed 狀態計為完成", VerifyStatisticsStatuses),
     ("舊版 Completed/Snoozed 欄位可遷移", VerifyLegacyStatusCompatibility),
     ("預設提醒具有唯一識別碼", VerifyDefaultReminderIds),
+    ("內建提醒去重但保留多個自訂提醒", VerifyReminderNormalization),
     ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime)
 };
 
@@ -64,6 +65,25 @@ static void VerifyDefaultReminderIds()
     {
         throw new InvalidOperationException("預設提醒包含空白 Id。");
     }
+}
+
+static void VerifyReminderNormalization()
+{
+    const string duplicateId = "same-id";
+    var reminders = new List<ReminderItem>
+    {
+        new() { Id = duplicateId, Type = ReminderType.Water, Name = "喝水 A" },
+        new() { Id = "water-2", Type = ReminderType.Water, Name = "喝水 B" },
+        new() { Id = duplicateId, Type = ReminderType.Custom, Name = "自訂 A" },
+        new() { Id = "custom-2", Type = ReminderType.Custom, Name = "自訂 B" }
+    };
+
+    var result = ReminderCollectionNormalizer.Normalize(reminders);
+    Equal(true, result.Changed);
+    Equal(3, result.Reminders.Count);
+    Equal(1, result.Reminders.Count(item => item.Type == ReminderType.Water));
+    Equal(2, result.Reminders.Count(item => item.Type == ReminderType.Custom));
+    Equal(3, result.Reminders.Select(item => item.Id).Distinct().Count());
 }
 
 static void VerifyPausePreservesRemainingTime()

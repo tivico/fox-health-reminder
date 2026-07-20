@@ -62,6 +62,8 @@ public class SettingsManager
     /// </summary>
     public void Load()
     {
+        var settingsChanged = false;
+
         try
         {
             // 載入應用程式設定
@@ -70,8 +72,8 @@ public class SettingsManager
                 var json = File.ReadAllText(SettingsPath);
                 Settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
                 
-                // 確保每個提醒都有唯一識別碼；允許多個 Custom 提醒。
-                NormalizeReminderIds();
+                // 內建類型各保留一筆，自訂提醒則可有多筆。
+                settingsChanged = NormalizeReminders();
             }
 
             // 載入統計資料
@@ -83,6 +85,12 @@ public class SettingsManager
 
             // 清理超過 30 天的統計資料
             CleanOldStatistics();
+
+            // 必須等設定與統計都載入後再寫回，避免覆蓋既有統計。
+            if (settingsChanged)
+            {
+                Save();
+            }
         }
         catch (Exception ex)
         {
@@ -95,25 +103,11 @@ public class SettingsManager
     /// <summary>
     /// 確保提醒項目的 Id 存在且不重複。
     /// </summary>
-    private void NormalizeReminderIds()
+    private bool NormalizeReminders()
     {
-        var usedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var changed = false;
-
-        foreach (var reminder in Settings.Reminders)
-        {
-            if (string.IsNullOrWhiteSpace(reminder.Id) || !usedIds.Add(reminder.Id))
-            {
-                reminder.Id = Guid.NewGuid().ToString();
-                usedIds.Add(reminder.Id);
-                changed = true;
-            }
-        }
-
-        if (changed)
-        {
-            Save();
-        }
+        var result = ReminderCollectionNormalizer.Normalize(Settings.Reminders);
+        Settings.Reminders = result.Reminders;
+        return result.Changed;
     }
 
     /// <summary>

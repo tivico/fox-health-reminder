@@ -17,6 +17,12 @@ public partial class MainForm : Form
     private string? _lastTriggeredReminderId;
     private string? _lastTriggeredOccurrenceId;
     private bool _isReallyClosing = false;
+    private readonly List<Button> _navigationButtons = new();
+    private Panel? _contentHost;
+    private Label? _headerStatusLabel;
+    private Button? _todayNavigationButton;
+    private Button? _settingsNavigationButton;
+    private Button? _statisticsNavigationButton;
 
     // 多圖示支援
     private Icon? _mainIcon;      // 主圖示（小狐狸）
@@ -34,6 +40,7 @@ public partial class MainForm : Form
 
         // 套用可愛風格
         ApplyCuteTheme();
+        BuildModernShell();
     }
 
 
@@ -121,7 +128,9 @@ public partial class MainForm : Form
 
         // 檢查是否需要最小化啟動
         var settings = SettingsManager.Instance.Settings;
-        if (settings.StartMinimized)
+        var forceShow = Environment.GetCommandLineArgs()
+            .Any(argument => argument.Equals("--show", StringComparison.OrdinalIgnoreCase));
+        if (settings.StartMinimized && !forceShow)
         {
             this.WindowState = FormWindowState.Minimized;
             this.Hide();
@@ -161,6 +170,10 @@ public partial class MainForm : Form
         {
             this.Hide();
         }
+        else
+        {
+            ResizeListViewColumns();
+        }
     }
 
     #endregion
@@ -197,7 +210,7 @@ public partial class MainForm : Form
     private void menuItemStatistics_Click(object sender, EventArgs e)
     {
         ShowMainForm();
-        tabControl.SelectedTab = tabPageStatistics;
+        ShowSection(panelStatistics, _statisticsNavigationButton);
     }
 
     private void menuItemExit_Click(object sender, EventArgs e)
@@ -298,6 +311,8 @@ public partial class MainForm : Form
             lblPauseStatus.ForeColor = Color.FromArgb(255, 152, 0);
             menuItemPause.Text = "恢復所有提醒 (&P)";
         }
+
+        UpdateHeaderStatus();
     }
 
     private void InitializeListViews()
@@ -316,6 +331,28 @@ public partial class MainForm : Form
         listViewStatistics.Columns.Add("完成次數", 100);
         listViewStatistics.Columns.Add("總提醒次數", 100);
         listViewStatistics.Columns.Add("完成率", 80);
+
+        ResizeListViewColumns();
+    }
+
+    private void ResizeListViewColumns()
+    {
+        if (listViewCountdown.Columns.Count == 5 && listViewCountdown.ClientSize.Width > 500)
+        {
+            listViewCountdown.Columns[0].Width = 64;
+            listViewCountdown.Columns[1].Width = Math.Max(180, listViewCountdown.ClientSize.Width - 440);
+            listViewCountdown.Columns[2].Width = 90;
+            listViewCountdown.Columns[3].Width = 120;
+            listViewCountdown.Columns[4].Width = 130;
+        }
+
+        if (listViewStatistics.Columns.Count == 4 && listViewStatistics.ClientSize.Width > 440)
+        {
+            listViewStatistics.Columns[0].Width = Math.Max(180, listViewStatistics.ClientSize.Width - 320);
+            listViewStatistics.Columns[1].Width = 100;
+            listViewStatistics.Columns[2].Width = 110;
+            listViewStatistics.Columns[3].Width = 90;
+        }
     }
 
     private void UpdateCountdownDisplay()
@@ -377,6 +414,8 @@ public partial class MainForm : Form
             lblBigCountdown.Text = "--:--";
             lblNextReminderName.Text = "下一個：--";
         }
+
+        UpdateHeaderStatus();
     }
 
     #endregion
@@ -412,6 +451,10 @@ public partial class MainForm : Form
     private void InitializeDataGridView()
     {
         dataGridViewReminders.AutoGenerateColumns = false;
+        dataGridViewReminders.AllowUserToAddRows = false;
+        dataGridViewReminders.AllowUserToDeleteRows = false;
+        dataGridViewReminders.MultiSelect = false;
+        dataGridViewReminders.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         dataGridViewReminders.Columns.Clear();
 
         // 啟用欄位
@@ -838,6 +881,537 @@ public partial class MainForm : Form
             }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// 建立現代化主框架，沿用既有頁面控制項與事件。
+    /// </summary>
+    private void BuildModernShell()
+    {
+        SuspendLayout();
+
+        tabControl.Visible = false;
+        ClientSize = new Size(920, 640);
+        MinimumSize = new Size(820, 600);
+
+        var rootLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.WindowBackground,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        rootLayout.Controls.Add(CreateHeader(), 0, 0);
+
+        var bodyLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.WindowBackground,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(16, 12, 16, 16),
+            Margin = Padding.Empty
+        };
+        bodyLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 176));
+        bodyLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        bodyLayout.Controls.Add(CreateSidebar(), 0, 0);
+
+        _contentHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.WindowBackground,
+            Margin = new Padding(12, 0, 0, 0)
+        };
+        bodyLayout.Controls.Add(_contentHost, 1, 0);
+        rootLayout.Controls.Add(bodyLayout, 0, 1);
+
+        Controls.Add(rootLayout);
+        rootLayout.BringToFront();
+
+        BuildStatusPage();
+        BuildSettingsPage();
+        BuildStatisticsPage();
+        ShowSection(panelStatus, _todayNavigationButton);
+        UpdateHeaderStatus();
+
+        ResumeLayout(true);
+    }
+
+    private Control CreateHeader()
+    {
+        var header = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.CardBackground,
+            Padding = new Padding(24, 12, 24, 10),
+            Margin = Padding.Empty
+        };
+
+        var fox = new Label
+        {
+            AutoSize = false,
+            Location = new Point(24, 13),
+            Size = new Size(48, 46),
+            Font = new Font(AppTheme.FontFamily, 25F),
+            Text = "🦊",
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        var title = new Label
+        {
+            AutoSize = true,
+            Location = new Point(80, 13),
+            Font = new Font(AppTheme.FontFamily, 15F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = "小狐狸健康助手"
+        };
+        var subtitle = new Label
+        {
+            AutoSize = true,
+            Location = new Point(82, 42),
+            Font = new Font(AppTheme.FontFamily, 8.5F),
+            ForeColor = AppTheme.SecondaryText,
+            Text = "陪你喝水、休息眼睛，也記得起身走走"
+        };
+
+        _headerStatusLabel = new Label
+        {
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            AutoSize = false,
+            Location = new Point(744, 20),
+            Size = new Size(150, 34),
+            Font = new Font(AppTheme.FontFamily, 9F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        header.Resize += (_, _) =>
+        {
+            if (_headerStatusLabel != null)
+            {
+                _headerStatusLabel.Left = header.ClientSize.Width - _headerStatusLabel.Width - 24;
+            }
+        };
+
+        header.Controls.Add(fox);
+        header.Controls.Add(title);
+        header.Controls.Add(subtitle);
+        header.Controls.Add(_headerStatusLabel);
+        return header;
+    }
+
+    private Control CreateSidebar()
+    {
+        var sidebar = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(12, 18, 12, 12)
+        };
+
+        var navigation = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = AppTheme.CardBackground,
+            Padding = Padding.Empty
+        };
+
+        var sectionLabel = new Label
+        {
+            AutoSize = false,
+            Size = new Size(148, 26),
+            Margin = new Padding(8, 0, 0, 8),
+            Font = new Font(AppTheme.FontFamily, 8F, FontStyle.Bold),
+            ForeColor = AppTheme.SecondaryText,
+            Text = "功能選單",
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        navigation.Controls.Add(sectionLabel);
+
+        _todayNavigationButton = CreateNavigationButton("⌂   今日總覽", panelStatus);
+        _settingsNavigationButton = CreateNavigationButton("☷   提醒與設定", panelSettings);
+        _statisticsNavigationButton = CreateNavigationButton("▥   健康紀錄", panelStatistics);
+        navigation.Controls.Add(_todayNavigationButton);
+        navigation.Controls.Add(_settingsNavigationButton);
+        navigation.Controls.Add(_statisticsNavigationButton);
+
+        var versionLabel = new Label
+        {
+            Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
+            AutoSize = false,
+            Location = new Point(20, 488),
+            Size = new Size(136, 28),
+            Font = new Font(AppTheme.FontFamily, 8F),
+            ForeColor = AppTheme.SecondaryText,
+            Text = "版本 1.0.0",
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        sidebar.Resize += (_, _) => versionLabel.Top = sidebar.ClientSize.Height - 42;
+
+        sidebar.Controls.Add(navigation);
+        sidebar.Controls.Add(versionLabel);
+        versionLabel.BringToFront();
+        return sidebar;
+    }
+
+    private Button CreateNavigationButton(string text, Control section)
+    {
+        var button = new Button
+        {
+            FlatStyle = FlatStyle.Flat,
+            Size = new Size(148, 46),
+            Margin = new Padding(0, 2, 0, 4),
+            Padding = new Padding(12, 0, 0, 0),
+            Font = new Font(AppTheme.FontFamily, 9.5F, FontStyle.Bold),
+            ForeColor = AppTheme.SecondaryText,
+            BackColor = AppTheme.CardBackground,
+            Text = text,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Cursor = Cursors.Hand,
+            Tag = false
+        };
+        button.FlatAppearance.BorderSize = 0;
+        ApplyRoundedRegion(button, 10);
+        button.Resize += (_, _) => ApplyRoundedRegion(button, 10);
+        button.Click += (_, _) => ShowSection(section, button);
+        button.MouseEnter += (_, _) =>
+        {
+            if (button.Tag is not true)
+            {
+                button.BackColor = Color.FromArgb(255, 246, 240);
+            }
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            if (button.Tag is not true)
+            {
+                button.BackColor = AppTheme.CardBackground;
+            }
+        };
+        _navigationButtons.Add(button);
+        return button;
+    }
+
+    private void ShowSection(Control section, Button? activeButton)
+    {
+        if (_contentHost == null) return;
+
+        foreach (Control page in new Control[] { panelStatus, panelSettings, panelStatistics })
+        {
+            page.Visible = page == section;
+        }
+
+        section.Dock = DockStyle.Fill;
+        if (section.Parent != _contentHost)
+        {
+            _contentHost.Controls.Add(section);
+        }
+        section.BringToFront();
+
+        foreach (var button in _navigationButtons)
+        {
+            var selected = button == activeButton;
+            button.Tag = selected;
+            button.BackColor = selected ? AppTheme.SelectedBackground : AppTheme.CardBackground;
+            button.ForeColor = selected ? AppTheme.Primary : AppTheme.SecondaryText;
+        }
+    }
+
+    private void BuildStatusPage()
+    {
+        panelStatus.SuspendLayout();
+        panelStatus.Controls.Clear();
+        panelStatus.BackColor = AppTheme.WindowBackground;
+        panelStatus.Padding = Padding.Empty;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.WindowBackground,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+
+        var heroCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(24, 18, 24, 18)
+        };
+        lblNextReminder.Text = "下一個提醒";
+        lblNextReminder.Font = new Font(AppTheme.FontFamily, 10F, FontStyle.Bold);
+        lblNextReminder.ForeColor = AppTheme.SecondaryText;
+        lblNextReminder.Location = new Point(24, 18);
+        lblBigCountdown.Font = new Font(AppTheme.FontFamily, 38F, FontStyle.Bold);
+        lblBigCountdown.Location = new Point(20, 45);
+        lblBigCountdown.Size = new Size(270, 76);
+        lblNextReminderName.Font = new Font(AppTheme.FontFamily, 13F, FontStyle.Bold);
+        lblNextReminderName.Location = new Point(330, 62);
+        lblNextReminderName.Size = new Size(350, 34);
+        lblNextReminderName.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        heroCard.Controls.Add(lblNextReminder);
+        heroCard.Controls.Add(lblBigCountdown);
+        heroCard.Controls.Add(lblNextReminderName);
+
+        var queueCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(18, 14, 18, 16)
+        };
+        var queueLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = AppTheme.CardBackground
+        };
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        queueLayout.Controls.Add(new Label
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font(AppTheme.FontFamily, 10F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = "今天接下來的提醒",
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        listViewCountdown.Dock = DockStyle.Fill;
+        listViewCountdown.BorderStyle = BorderStyle.None;
+        listViewCountdown.BackColor = AppTheme.CardBackground;
+        listViewCountdown.Resize += (_, _) => ResizeListViewColumns();
+        queueLayout.Controls.Add(listViewCountdown, 0, 1);
+        queueCard.Controls.Add(queueLayout);
+
+        var actionCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(16, 10, 16, 10)
+        };
+        btnPauseAll.Location = new Point(16, 10);
+        btnPauseAll.Size = new Size(176, 42);
+        btnPauseAll.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        lblPauseStatus.Location = new Point(210, 20);
+        lblPauseStatus.Font = new Font(AppTheme.FontFamily, 9.5F, FontStyle.Bold);
+        lblPauseStatus.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        actionCard.Controls.Add(btnPauseAll);
+        actionCard.Controls.Add(lblPauseStatus);
+
+        layout.Controls.Add(heroCard, 0, 0);
+        layout.Controls.Add(queueCard, 0, 1);
+        layout.Controls.Add(actionCard, 0, 2);
+        panelStatus.Controls.Add(layout);
+        panelStatus.ResumeLayout(true);
+    }
+
+    private void BuildSettingsPage()
+    {
+        panelSettings.SuspendLayout();
+        panelSettings.Controls.Clear();
+        panelSettings.BackColor = AppTheme.WindowBackground;
+        panelSettings.AutoScroll = true;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = false,
+            Height = 500,
+            ColumnCount = 1,
+            RowCount = 4,
+            BackColor = AppTheme.WindowBackground,
+            Padding = Padding.Empty,
+            Margin = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 245));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+
+        ConfigureSettingsGroup(groupBoxReminders, "提醒項目");
+        ConfigureSettingsGroup(groupBoxGeneral, "一般設定");
+        ConfigureSettingsGroup(groupBoxDoNotDisturb, "勿擾時段");
+
+        dataGridViewReminders.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        btnAddReminder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        btnDeleteReminder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        groupBoxReminders.Resize += (_, _) => ArrangeReminderGroup();
+        ArrangeReminderGroup();
+
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            BackColor = AppTheme.WindowBackground,
+            Padding = new Padding(0, 10, 0, 0),
+            Margin = Padding.Empty
+        };
+        btnSaveSettings.Size = new Size(128, 40);
+        btnResetDefaults.Size = new Size(116, 40);
+        btnSaveSettings.Margin = new Padding(8, 0, 0, 0);
+        btnResetDefaults.Margin = Padding.Empty;
+        actions.Controls.Add(btnSaveSettings);
+        actions.Controls.Add(btnResetDefaults);
+
+        layout.Controls.Add(groupBoxReminders, 0, 0);
+        layout.Controls.Add(groupBoxGeneral, 0, 1);
+        layout.Controls.Add(groupBoxDoNotDisturb, 0, 2);
+        layout.Controls.Add(actions, 0, 3);
+        panelSettings.Controls.Add(layout);
+        panelSettings.Resize += (_, _) => layout.Width = panelSettings.ClientSize.Width;
+        panelSettings.ResumeLayout(true);
+    }
+
+    private static void ConfigureSettingsGroup(GroupBox groupBox, string title)
+    {
+        groupBox.Text = title;
+        groupBox.Dock = DockStyle.Fill;
+        groupBox.Margin = new Padding(0, 0, 0, 10);
+        groupBox.Padding = new Padding(16, 10, 16, 12);
+        groupBox.BackColor = AppTheme.CardBackground;
+        groupBox.ForeColor = AppTheme.PrimaryText;
+    }
+
+    private void ArrangeReminderGroup()
+    {
+        if (groupBoxReminders.ClientSize.Width <= 40) return;
+
+        dataGridViewReminders.Location = new Point(16, 28);
+        dataGridViewReminders.Size = new Size(
+            groupBoxReminders.ClientSize.Width - 32,
+            Math.Max(90, groupBoxReminders.ClientSize.Height - 80));
+        btnAddReminder.Location = new Point(16, groupBoxReminders.ClientSize.Height - 42);
+        btnDeleteReminder.Location = new Point(108, groupBoxReminders.ClientSize.Height - 42);
+        btnAddReminder.Size = new Size(84, 30);
+        btnDeleteReminder.Size = new Size(84, 30);
+    }
+
+    private void BuildStatisticsPage()
+    {
+        panelStatistics.SuspendLayout();
+        panelStatistics.Controls.Clear();
+        panelStatistics.BackColor = AppTheme.WindowBackground;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            BackColor = AppTheme.WindowBackground,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var summaryCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(22, 16, 22, 16)
+        };
+        lblTodaySummary.Location = new Point(22, 18);
+        lblTodaySummary.Font = new Font(AppTheme.FontFamily, 12F, FontStyle.Bold);
+        lblStreakDays.Location = new Point(410, 22);
+        lblStreakDays.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        progressBarToday.Location = new Point(22, 62);
+        progressBarToday.Size = new Size(580, 28);
+        progressBarToday.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        lblProgressText.Location = new Point(620, 66);
+        lblProgressText.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        summaryCard.Controls.Add(lblTodaySummary);
+        summaryCard.Controls.Add(lblStreakDays);
+        summaryCard.Controls.Add(progressBarToday);
+        summaryCard.Controls.Add(lblProgressText);
+
+        var foxCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(20, 10, 20, 10)
+        };
+        lblFoxMessage.Dock = DockStyle.Fill;
+        lblFoxMessage.Font = new Font(AppTheme.FontFamily, 10.5F);
+        lblFoxMessage.TextAlign = ContentAlignment.MiddleLeft;
+        foxCard.Controls.Add(lblFoxMessage);
+
+        var detailCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(18, 14, 18, 16)
+        };
+        var detailLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = AppTheme.CardBackground,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        detailLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        detailLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        detailLayout.Controls.Add(new Label
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font(AppTheme.FontFamily, 10F, FontStyle.Bold),
+            ForeColor = AppTheme.PrimaryText,
+            Text = "今日提醒明細",
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        listViewStatistics.Dock = DockStyle.Fill;
+        listViewStatistics.BorderStyle = BorderStyle.None;
+        listViewStatistics.BackColor = AppTheme.CardBackground;
+        listViewStatistics.Resize += (_, _) => ResizeListViewColumns();
+        detailLayout.Controls.Add(listViewStatistics, 0, 1);
+        detailCard.Controls.Add(detailLayout);
+
+        layout.Controls.Add(summaryCard, 0, 0);
+        layout.Controls.Add(foxCard, 0, 1);
+        layout.Controls.Add(detailCard, 0, 2);
+        panelStatistics.Controls.Add(layout);
+        panelStatistics.ResumeLayout(true);
+    }
+
+    private void UpdateHeaderStatus()
+    {
+        if (_headerStatusLabel == null) return;
+
+        if (_reminderService.IsInDoNotDisturbMode)
+        {
+            _headerStatusLabel.Text = "☾  勿擾模式中";
+            _headerStatusLabel.ForeColor = AppTheme.Warning;
+            _headerStatusLabel.BackColor = Color.FromArgb(255, 247, 226);
+        }
+        else if (_reminderService.IsPausedAll)
+        {
+            _headerStatusLabel.Text = "Ⅱ  提醒已暫停";
+            _headerStatusLabel.ForeColor = AppTheme.Warning;
+            _headerStatusLabel.BackColor = Color.FromArgb(255, 247, 226);
+        }
+        else
+        {
+            _headerStatusLabel.Text = "●  提醒運行中";
+            _headerStatusLabel.ForeColor = AppTheme.Healthy;
+            _headerStatusLabel.BackColor = Color.FromArgb(237, 248, 241);
+        }
+
+        ApplyRoundedRegion(_headerStatusLabel, 12);
     }
 
     /// <summary>
