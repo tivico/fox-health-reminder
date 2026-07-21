@@ -1,3 +1,5 @@
+using Newtonsoft.Json;
+
 namespace HealthReminder.Models;
 
 /// <summary>
@@ -5,7 +7,7 @@ namespace HealthReminder.Models;
 /// </summary>
 public class AppSettings
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>
     /// 設定結構版本，用於一次性、可追蹤的資料遷移。
@@ -15,6 +17,7 @@ public class AppSettings
     /// <summary>
     /// 所有提醒項目
     /// </summary>
+    [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<ReminderItem> Reminders { get; set; } = ReminderItem.GetDefaults();
 
     /// <summary>

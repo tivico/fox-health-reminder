@@ -1,12 +1,15 @@
 using HealthReminder.Models;
 using HealthReminder.Services;
+using Newtonsoft.Json;
 
 var checks = new List<(string Name, Action Run)>
 {
     ("統計只將 Completed 狀態計為完成", VerifyStatisticsStatuses),
     ("舊版 Completed/Snoozed 欄位可遷移", VerifyLegacyStatusCompatibility),
     ("預設提醒具有唯一識別碼", VerifyDefaultReminderIds),
+    ("JSON 載入會取代預設清單而非重複追加", VerifyReminderListDeserialization),
     ("提醒只修復重複 Id，不限制範本數量", VerifyReminderNormalization),
+    ("完全相同的提醒會去重，不同設定仍會保留", VerifyExactDuplicateNormalization),
     ("四種排程與完成方式組合皆可保存", VerifyGeneralTaskCombinations),
     ("護眼預設為 20 秒計時活動", VerifyDefaultEyeActivity),
     ("一次性提醒使用指定的絕對時間", VerifyOneTimeDeadline),
@@ -72,6 +75,16 @@ static void VerifyDefaultReminderIds()
     }
 }
 
+static void VerifyReminderListDeserialization()
+{
+    var source = new AppSettings();
+    var json = JsonConvert.SerializeObject(source);
+    var restored = JsonConvert.DeserializeObject<AppSettings>(json)
+        ?? throw new InvalidOperationException("設定反序列化結果為 null。");
+
+    Equal(source.Reminders.Count, restored.Reminders.Count);
+}
+
 static void VerifyReminderNormalization()
 {
     const string duplicateId = "same-id";
@@ -89,6 +102,23 @@ static void VerifyReminderNormalization()
     Equal(2, result.Reminders.Count(item => item.Type == ReminderType.Water));
     Equal(2, result.Reminders.Count(item => item.Type == ReminderType.Custom));
     Equal(4, result.Reminders.Select(item => item.Id).Distinct().Count());
+}
+
+static void VerifyExactDuplicateNormalization()
+{
+    var reminders = new List<ReminderItem>
+    {
+        new() { Id = "water-a", Type = ReminderType.Water, Name = "喝水", IntervalMinutes = 60 },
+        new() { Id = "water-b", Type = ReminderType.Water, Name = "喝水", IntervalMinutes = 60 },
+        new() { Id = "water-c", Type = ReminderType.Water, Name = "喝水", IntervalMinutes = 90 }
+    };
+
+    var result = ReminderCollectionNormalizer.Normalize(reminders);
+
+    Equal(true, result.Changed);
+    Equal(2, result.Reminders.Count);
+    Equal("water-a", result.Reminders[0].Id);
+    Equal(90, result.Reminders[1].IntervalMinutes);
 }
 
 static void VerifyGeneralTaskCombinations()

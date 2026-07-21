@@ -124,8 +124,9 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 ```
 
 - 寫入使用暫存檔後原子取代，降低中途損壞風險。
-- `AppSettings.SchemaVersion` 目前為 2。
+- `AppSettings.SchemaVersion` 目前為 3。
 - 舊設定首次載入時會補齊新欄位。
+- JSON 載入會取代預設提醒清單，不會將預設值再次追加；舊資料中設定完全相同的重複提醒會自動合併。
 - 舊護眼提醒會遷移為 20 秒、手動開始的計時活動。
 - 舊 `Completed`／`Snoozed` 布林欄位仍可遷移至新版狀態。
 - 統計以 ReminderId 與實際名稱彙整，不再只看固定 ReminderType。
@@ -146,7 +147,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 
 ```text
 Release build: 0 warnings, 0 errors
-Verification: 10/10 passed
+Verification: 12/12 passed
 Published EXE smoke test: passed
 ```
 
@@ -155,7 +156,9 @@ Published EXE smoke test: passed
 - Completed 統計規則。
 - 舊狀態欄位相容性。
 - 預設提醒唯一 Id。
+- JSON 載入取代提醒清單，不會重複追加預設項目。
 - 只修復重複 Id，不限制同類範本數量。
+- 完全相同提醒自動去重，同類但不同設定仍可並存。
 - 四種排程／完成組合。
 - 護眼 20 秒預設活動。
 - 一次性絕對期限。
