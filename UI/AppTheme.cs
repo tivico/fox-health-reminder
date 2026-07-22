@@ -16,10 +16,25 @@ public static class AppTheme
     public static Color PrimaryText { get; } = Color.FromArgb(61, 51, 47);
     public static Color SecondaryText { get; } = Color.FromArgb(117, 105, 99);
     public static Color Border { get; } = Color.FromArgb(234, 223, 216);
+    public static Color Shadow { get; } = Color.FromArgb(64, 46, 38);
     public static Color SelectedBackground { get; } = Color.FromArgb(255, 232, 218);
     public static Color MutedButton { get; } = Color.FromArgb(139, 127, 120);
     public static Color MutedButtonHover { get; } = Color.FromArgb(112, 101, 95);
 
     public const string FontFamily = "Microsoft JhengHei UI";
     public const int CornerRadius = 10;
+
+    /// <summary>
+    /// 依提醒類型回傳語意化的強調色，用於卡片色條等視覺標記。
+    /// </summary>
+    public static Color AccentFor(HealthReminder.Models.ReminderType type)
+    {
+        return type switch
+        {
+            HealthReminder.Models.ReminderType.Water => Color.FromArgb(90, 160, 200),
+            HealthReminder.Models.ReminderType.EyeRest => Color.FromArgb(95, 175, 135),
+            HealthReminder.Models.ReminderType.Stretch => Color.FromArgb(240, 150, 78),
+            _ => Primary
+        };
+    }
 }

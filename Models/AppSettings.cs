@@ -7,7 +7,7 @@ namespace HealthReminder.Models;
 /// </summary>
 public class AppSettings
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>
     /// 設定結構版本，用於一次性、可追蹤的資料遷移。
@@ -64,4 +64,14 @@ public class AppSettings
     /// 關閉位移與逐格動畫，但保留文字與操作回饋。
     /// </summary>
     public bool ReduceMotion { get; set; }
+
+    /// <summary>
+    /// 工作時段開始（上班）時間，作為「今日成就」目標的起點。
+    /// </summary>
+    public TimeSpan WorkdayStart { get; set; } = new TimeSpan(9, 0, 0); // 上午 9:00
+
+    /// <summary>
+    /// 工作時段結束（下班）時間，作為「今日成就」100% 目標的終點。
+    /// </summary>
+    public TimeSpan WorkdayEnd { get; set; } = new TimeSpan(18, 0, 0); // 下午 6:00
 }

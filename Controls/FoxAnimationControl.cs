@@ -13,19 +13,20 @@ public enum FoxAnimationState
 }
 
 /// <summary>
-/// 使用內嵌 4×2 Sprite Sheet 的像素狐狸動畫；圖資缺失時退回 Emoji。
+/// 使用內嵌 4×2 Sprite Sheet 的 2D 小狐狸動畫；圖資缺失時退回 Emoji。
 /// </summary>
 public sealed class FoxAnimationControl : Control
 {
+    // fox-sprites-v3 的格子：0=端坐 1=眨眼 2=張嘴 3=揮手 4=大笑 5=跳躍 6=伸懶腰 7=蜷睡
     private static readonly IReadOnlyDictionary<FoxAnimationState, int[]> FrameSequences =
         new Dictionary<FoxAnimationState, int[]>
         {
-            [FoxAnimationState.RollIn] = new[] { 0, 1, 2 },
-            [FoxAnimationState.Wave] = new[] { 2, 3, 2, 3 },
-            [FoxAnimationState.Talk] = new[] { 3, 2, 3, 2 },
-            [FoxAnimationState.Wait] = new[] { 4, 5, 4, 4 },
-            [FoxAnimationState.Celebrate] = new[] { 6, 2, 6, 2 },
-            [FoxAnimationState.RollOut] = new[] { 2, 1, 7 }
+            [FoxAnimationState.RollIn] = new[] { 6, 0, 0 },        // 伸懶腰登場 → 坐下
+            [FoxAnimationState.Wave] = new[] { 3, 0, 3, 0 },       // 揮手 ↔ 坐
+            [FoxAnimationState.Talk] = new[] { 2, 0, 2, 0 },       // 張嘴 ↔ 閉嘴
+            [FoxAnimationState.Wait] = new[] { 0, 0, 0, 1 },       // 端坐、偶爾眨眼
+            [FoxAnimationState.Celebrate] = new[] { 5, 4, 5, 4 },  // 跳躍 ↔ 大笑
+            [FoxAnimationState.RollOut] = new[] { 0, 1, 7 }        // 坐 → 眨 → 蜷睡
         };
 
     private readonly System.Windows.Forms.Timer _frameTimer;
@@ -113,8 +114,8 @@ public sealed class FoxAnimationControl : Control
             cellHeight);
 
         var destination = FitRectangle(ClientRectangle, cellWidth, cellHeight);
-        e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-        e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+        e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         e.Graphics.CompositingMode = CompositingMode.SourceOver;
         e.Graphics.DrawImage(_spriteSheet, destination, source, GraphicsUnit.Pixel);
     }
@@ -142,7 +143,7 @@ public sealed class FoxAnimationControl : Control
         try
         {
             using var stream = typeof(FoxAnimationControl).Assembly.GetManifestResourceStream(
-                "HealthReminder.Resources.fox-sprites-v2.png");
+                "HealthReminder.Resources.fox-sprites-v3.png");
             if (stream == null) return null;
             using var image = new Bitmap(stream);
             return new Bitmap(image);

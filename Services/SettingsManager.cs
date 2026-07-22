@@ -77,6 +77,7 @@ public class SettingsManager
 
                 // 修復舊設定欄位與重複 Id；不限制任何提醒範本的數量。
                 settingsChanged |= NormalizeReminders();
+                settingsChanged |= NormalizeWorkday();
             }
 
             // 載入統計資料
@@ -111,6 +112,18 @@ public class SettingsManager
         var result = ReminderCollectionNormalizer.Normalize(Settings.Reminders);
         Settings.Reminders = result.Reminders;
         return result.Changed;
+    }
+
+    private bool NormalizeWorkday()
+    {
+        if (DailyAchievementCalculator.IsValidWorkday(Settings.WorkdayStart, Settings.WorkdayEnd))
+        {
+            return false;
+        }
+
+        Settings.WorkdayStart = new TimeSpan(9, 0, 0);
+        Settings.WorkdayEnd = new TimeSpan(18, 0, 0);
+        return true;
     }
 
     private bool MigrateSettings(int storedSchemaVersion)
@@ -188,6 +201,19 @@ public class SettingsManager
                 File.Delete(temporaryPath);
             }
         }
+    }
+
+    /// <summary>
+    /// 計算「今日成就」的目標次數：整個工作時段內，所有啟用提醒預計出現的總次數。
+    /// 作為進度條 100% 的基準，讓「完成一整天份」才算達標。
+    /// </summary>
+    public int GetDailyGoalTarget()
+    {
+        return DailyAchievementCalculator.CalculateGoal(
+            Settings.Reminders,
+            DateTime.Today,
+            Settings.WorkdayStart,
+            Settings.WorkdayEnd);
     }
 
     /// <summary>

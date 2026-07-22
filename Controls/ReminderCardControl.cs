@@ -14,6 +14,7 @@ public sealed class ReminderCardControl : UserControl
     private readonly Label _detailLabel;
     private readonly Label _messageLabel;
     private readonly ToggleSwitch _enabledSwitch;
+    private Color _accent = AppTheme.Primary;
 
     public ReminderCardControl(ReminderItem item)
     {
@@ -109,6 +110,7 @@ public sealed class ReminderCardControl : UserControl
 
     private void RefreshContent()
     {
+        _accent = AppTheme.AccentFor(Item.Type);
         _emojiLabel.Text = Item.Emoji;
         _nameLabel.Text = Item.Name;
         var schedule = Item.ScheduleKind == ReminderScheduleKind.OneTime
@@ -128,6 +130,15 @@ public sealed class ReminderCardControl : UserControl
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = CreateRoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+
+        // 依提醒類型上色的左側色條
+        e.Graphics.SetClip(path);
+        using (var accentBrush = new SolidBrush(_accent))
+        {
+            e.Graphics.FillRectangle(accentBrush, new Rectangle(0, 0, 5, Height));
+        }
+        e.Graphics.ResetClip();
+
         using var pen = new Pen(AppTheme.Border);
         e.Graphics.DrawPath(pen, path);
     }

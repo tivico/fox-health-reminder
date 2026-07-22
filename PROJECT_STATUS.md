@@ -23,7 +23,7 @@ HealthReminder 是給自己、家人與朋友使用的 Windows 桌面健康提�
 | UI | Windows Forms |
 | 目標平台 | Windows x64 |
 | JSON | Newtonsoft.Json 13.0.3 |
-| 圖形 | GDI+ 自訂繪製、Double Buffer、透明 PNG Sprite Sheet |
+| 圖形 | GDI+ 自訂繪製、Double Buffer、透明 PNG Sprite Sheet、bicubic 縮放 |
 | 發佈 | Self-contained、Single-file、壓縮、不裁剪 |
 | 測試 | 獨立 Console Verification 專案 |
 | 版本控制 | Git |
@@ -102,9 +102,9 @@ Program / MainForm
 - 設定儲存成功改為非阻斷式頁面訊息。
 - 一般設定提供「減少動畫」，停用位移與逐格播放但保留內容與操作。
 
-### 像素狐狸
+### 2D Sprite 狐狸
 
-狐狸使用內嵌 `Resources/fox-sprites-v2.png`，由 `FoxAnimationControl` 以 nearest-neighbor 與 Double Buffer 繪製。
+狐狸使用內嵌 `Resources/fox-sprites-v3.png`。此資源由 24 姿勢綠幕原圖挑選 8 個適合通知的姿勢，整理成 4×2 透明 Sprite Sheet；`FoxAnimationControl` 以 high-quality bicubic 與 Double Buffer 繪製。
 
 狀態流程：
 
@@ -124,7 +124,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 ```
 
 - 寫入使用暫存檔後原子取代，降低中途損壞風險。
-- `AppSettings.SchemaVersion` 目前為 3。
+- `AppSettings.SchemaVersion` 目前為 4。
 - 舊設定首次載入時會補齊新欄位。
 - JSON 載入會取代預設提醒清單，不會將預設值再次追加；舊資料中設定完全相同的重複提醒會自動合併。
 - 舊護眼提醒會遷移為 20 秒、手動開始的計時活動。
@@ -147,7 +147,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 
 ```text
 Release build: 0 warnings, 0 errors
-Verification: 12/12 passed
+Verification: 16/16 passed
 Published EXE smoke test: passed
 ```
 
@@ -161,6 +161,8 @@ Published EXE smoke test: passed
 - 完全相同提醒自動去重，同類但不同設定仍可並存。
 - 四種排程／完成組合。
 - 護眼 20 秒預設活動。
+- 工作時段每日目標與時段外提醒排除規則。
+- 工作時段完成數與跨日連續達標規則。
 - 一次性絕對期限。
 - 一次性稍後重新啟用。
 - 暫停保留剩餘時間。

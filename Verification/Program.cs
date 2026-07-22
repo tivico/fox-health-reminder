@@ -12,6 +12,10 @@ var checks = new List<(string Name, Action Run)>
     ("完全相同的提醒會去重，不同設定仍會保留", VerifyExactDuplicateNormalization),
     ("四種排程與完成方式組合皆可保存", VerifyGeneralTaskCombinations),
     ("護眼預設為 20 秒計時活動", VerifyDefaultEyeActivity),
+    ("每日目標只計算工作時段內的啟用提醒", VerifyDailyGoalWindow),
+    ("無效工作時段不會產生錯誤目標", VerifyInvalidWorkday),
+    ("工作時段完成數會排除時段外紀錄", VerifyCompletedWithinWorkday),
+    ("連續達標會跨日計算且不被未結束的今天中斷", VerifyAchievementStreak),
     ("一次性提醒使用指定的絕對時間", VerifyOneTimeDeadline),
     ("一次性提醒稍後會重新啟用", VerifyOneTimeSnooze),
     ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime),
@@ -147,6 +151,108 @@ static void VerifyDefaultEyeActivity()
     Equal(false, eyeRest.AutoStartActivity);
 }
 
+static void VerifyDailyGoalWindow()
+{
+    var day = new DateTime(2026, 7, 22);
+    var reminders = new List<ReminderItem>
+    {
+        new() { ScheduleKind = ReminderScheduleKind.Interval, IntervalMinutes = 60, IsEnabled = true },
+        new() { ScheduleKind = ReminderScheduleKind.Interval, IntervalMinutes = 20, IsEnabled = false },
+        new() { ScheduleKind = ReminderScheduleKind.OneTime, OneTimeAtLocal = day.AddHours(12), IsEnabled = true },
+        new() { ScheduleKind = ReminderScheduleKind.OneTime, OneTimeAtLocal = day.AddHours(20), IsEnabled = true }
+    };
+
+    var target = DailyAchievementCalculator.CalculateGoal(
+        reminders,
+        day,
+        TimeSpan.FromHours(9),
+        TimeSpan.FromHours(18));
+
+    Equal(10, target);
+}
+
+static void VerifyInvalidWorkday()
+{
+    Equal(false, DailyAchievementCalculator.IsValidWorkday(
+        TimeSpan.FromHours(18),
+        TimeSpan.FromHours(9)));
+
+    var target = DailyAchievementCalculator.CalculateGoal(
+        ReminderItem.GetDefaults(),
+        DateTime.Today,
+        TimeSpan.FromHours(18),
+        TimeSpan.FromHours(9));
+    Equal(0, target);
+}
+
+static void VerifyCompletedWithinWorkday()
+{
+    var day = new DateTime(2026, 7, 22);
+    var statistics = new DailyStatistics
+    {
+        Date = day,
+        Records = new List<ReminderRecord>
+        {
+            NewRecordAt(day.AddHours(8), ReminderStatus.Completed),
+            NewRecordAt(day.AddHours(10), ReminderStatus.Completed),
+            NewRecordAt(day.AddHours(11), ReminderStatus.Dismissed)
+        }
+    };
+
+    var completed = DailyAchievementCalculator.CountCompleted(
+        statistics,
+        TimeSpan.FromHours(9),
+        TimeSpan.FromHours(18));
+    Equal(1, completed);
+}
+
+static void VerifyAchievementStreak()
+{
+    var today = new DateTime(2026, 7, 22);
+    var statistics = new List<DailyStatistics>
+    {
+        new()
+        {
+            Date = today,
+            Records = new List<ReminderRecord>
+            {
+                NewRecordAt(today.AddHours(10), ReminderStatus.Dismissed)
+            }
+        },
+        new()
+        {
+            Date = today.AddDays(-1),
+            Records = new List<ReminderRecord>
+            {
+                NewRecordAt(today.AddDays(-1).AddHours(10), ReminderStatus.Completed),
+                NewRecordAt(today.AddDays(-1).AddHours(11), ReminderStatus.Dismissed)
+            }
+        },
+        new()
+        {
+            Date = today.AddDays(-2),
+            Records = new List<ReminderRecord>
+            {
+                NewRecordAt(today.AddDays(-2).AddHours(10), ReminderStatus.Completed)
+            }
+        }
+    };
+
+    var duringWorkday = DailyAchievementCalculator.CalculateStreak(
+        statistics,
+        today.AddHours(12),
+        TimeSpan.FromHours(9),
+        TimeSpan.FromHours(18));
+    Equal(2, duringWorkday);
+
+    var afterWorkday = DailyAchievementCalculator.CalculateStreak(
+        statistics,
+        today.AddHours(20),
+        TimeSpan.FromHours(9),
+        TimeSpan.FromHours(18));
+    Equal(0, afterWorkday);
+}
+
 static void VerifyOneTimeDeadline()
 {
     var target = DateTime.Now.AddMinutes(5);
@@ -227,6 +333,16 @@ static ReminderRecord NewRecord(ReminderStatus status)
     return new ReminderRecord
     {
         Type = ReminderType.Water,
+        Status = status
+    };
+}
+
+static ReminderRecord NewRecordAt(DateTime timestamp, ReminderStatus status)
+{
+    return new ReminderRecord
+    {
+        Type = ReminderType.Water,
+        Timestamp = timestamp,
         Status = status
     };
 }

@@ -30,10 +30,14 @@ public partial class MainForm : Form
     private BindingList<ReminderItem>? _reminderItems;
     private FlowLayoutPanel? _reminderCardsFlow;
     private FlowLayoutPanel? _countdownCardsFlow;
+    private FlowLayoutPanel? _statCardsFlow;
     private readonly Dictionary<string, ReminderCountdownCard> _countdownCards = new();
     private Label? _settingsFeedbackLabel;
     private System.Windows.Forms.Timer? _settingsFeedbackTimer;
     private CheckBox? _reduceMotionCheckBox;
+    private FoxAnimationControl? _headerFox;
+    private DateTimePicker? _workdayStartPicker;
+    private DateTimePicker? _workdayEndPicker;
 
     // 多圖示支援
     private Icon? _mainIcon;      // 主圖示（小狐狸）
@@ -154,6 +158,23 @@ public partial class MainForm : Form
 
         UpdateCountdownDisplay();
         UpdateStatisticsDisplay();
+
+        // 可用 --section=settings|stats 直接開到指定分頁（托盤選單也用相同導覽）
+        var sectionArg = Environment.GetCommandLineArgs()
+            .FirstOrDefault(argument => argument.StartsWith("--section=", StringComparison.OrdinalIgnoreCase));
+        if (sectionArg != null)
+        {
+            var section = sectionArg["--section=".Length..];
+            if (section.Equals("settings", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowSection(panelSettings, _settingsNavigationButton);
+            }
+            else if (section.Equals("stats", StringComparison.OrdinalIgnoreCase)
+                || section.Equals("statistics", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowSection(panelStatistics, _statisticsNavigationButton);
+            }
+        }
 
         if (Environment.GetCommandLineArgs().Any(argument =>
                 argument.Equals("--preview-notification", StringComparison.OrdinalIgnoreCase)))
@@ -637,11 +658,27 @@ public partial class MainForm : Form
         {
             _reduceMotionCheckBox.Checked = settings.ReduceMotion;
         }
+        if (_headerFox != null)
+        {
+            _headerFox.AnimationEnabled = !settings.ReduceMotion;
+        }
+        lblBigCountdown.AnimationsEnabled = !settings.ReduceMotion;
+        progressBarToday.AnimationsEnabled = !settings.ReduceMotion;
 
         // 勿擾設定
         chkDoNotDisturb.Checked = settings.DoNotDisturbEnabled;
         dtpDoNotDisturbStart.Value = DateTime.Today.Add(settings.DoNotDisturbStart);
         dtpDoNotDisturbEnd.Value = DateTime.Today.Add(settings.DoNotDisturbEnd);
+
+        // 工作時段（今日成就目標基準）
+        if (_workdayStartPicker != null)
+        {
+            _workdayStartPicker.Value = DateTime.Today.Add(settings.WorkdayStart);
+        }
+        if (_workdayEndPicker != null)
+        {
+            _workdayEndPicker.Value = DateTime.Today.Add(settings.WorkdayEnd);
+        }
     }
 
     private void btnSaveSettings_Click(object sender, EventArgs e)
@@ -673,6 +710,18 @@ public partial class MainForm : Form
     private void SaveSettings()
     {
         var settings = SettingsManager.Instance.Settings;
+        var workdayStart = _workdayStartPicker?.Value.TimeOfDay ?? settings.WorkdayStart;
+        var workdayEnd = _workdayEndPicker?.Value.TimeOfDay ?? settings.WorkdayEnd;
+
+        if (!DailyAchievementCalculator.IsValidWorkday(workdayStart, workdayEnd))
+        {
+            MessageBox.Show(
+                "工作時段的結束時間必須晚於開始時間。\n目前暫不支援跨午夜的工作時段。",
+                "工作時段需要修正",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
 
         if (_reminderItems != null)
         {
@@ -694,6 +743,12 @@ public partial class MainForm : Form
         settings.StartMinimized = chkStartMinimized.Checked;
         settings.SnoozeMinutes = (int)numSnoozeMinutes.Value;
         settings.ReduceMotion = _reduceMotionCheckBox?.Checked ?? false;
+        if (_headerFox != null)
+        {
+            _headerFox.AnimationEnabled = !settings.ReduceMotion;
+        }
+        lblBigCountdown.AnimationsEnabled = !settings.ReduceMotion;
+        progressBarToday.AnimationsEnabled = !settings.ReduceMotion;
 
         // 處理開機自動啟動
         if (chkStartWithWindows.Checked != settings.StartWithWindows)
@@ -705,6 +760,10 @@ public partial class MainForm : Form
         settings.DoNotDisturbEnabled = chkDoNotDisturb.Checked;
         settings.DoNotDisturbStart = dtpDoNotDisturbStart.Value.TimeOfDay;
         settings.DoNotDisturbEnd = dtpDoNotDisturbEnd.Value.TimeOfDay;
+
+        // 工作時段（今日成就目標基準）
+        settings.WorkdayStart = workdayStart;
+        settings.WorkdayEnd = workdayEnd;
 
         // 儲存並重新載入服務
         if (!SettingsManager.Instance.Save())
@@ -721,6 +780,7 @@ public partial class MainForm : Form
 
         RefreshReminderCards();
         UpdateCountdownDisplay();
+        UpdateStatisticsDisplay();
         ShowSettingsFeedback("✓ 設定已儲存，提醒已重新排程", AppTheme.Healthy);
     }
 
@@ -879,14 +939,12 @@ public partial class MainForm : Form
     private void UpdateStatisticsDisplay()
     {
         var today = SettingsManager.Instance.GetTodayStatistics();
-
-        listViewStatistics.BeginUpdate();
-        listViewStatistics.Items.Clear();
+        var settings = SettingsManager.Instance.Settings;
 
         int totalCompleted = 0;
         int totalCount = 0;
 
-        var configuredItems = SettingsManager.Instance.Settings.Reminders
+        var configuredItems = settings.Reminders
             .ToDictionary(item => item.Id, StringComparer.Ordinal);
         var reminderGroups = today.Records
             .GroupBy(record => string.IsNullOrWhiteSpace(record.ReminderId)
@@ -894,92 +952,120 @@ public partial class MainForm : Form
                 : record.ReminderId)
             .OrderBy(group => group.First().Name);
 
+        _statCardsFlow?.SuspendLayout();
+        if (_statCardsFlow != null)
+        {
+            while (_statCardsFlow.Controls.Count > 0)
+            {
+                var stale = _statCardsFlow.Controls[0];
+                _statCardsFlow.Controls.RemoveAt(0);
+                stale.Dispose();
+            }
+        }
+
+        var cardWidth = _statCardsFlow != null ? GetFlowCardWidth(_statCardsFlow) : 320;
+
         foreach (var group in reminderGroups)
         {
             var completed = group.Count(record => record.Status == ReminderStatus.Completed);
             var total = group.Count();
+            if (total <= 0) continue;
 
-            if (total > 0)
+            var firstRecord = group.First();
+            var configured = configuredItems.TryGetValue(firstRecord.ReminderId, out var found) ? found : null;
+            var emoji = configured?.Emoji ?? "💡";
+            var accent = configured != null ? AppTheme.AccentFor(configured.Type) : AppTheme.Primary;
+
+            if (_statCardsFlow != null)
             {
-                var rate = completed * 100.0 / total;
-                var firstRecord = group.First();
-                var emoji = configuredItems.TryGetValue(firstRecord.ReminderId, out var configured)
-                    ? configured.Emoji
-                    : "💡";
-
-                var item = new ListViewItem($"{emoji} {firstRecord.Name}");
-                item.SubItems.Add(completed.ToString());
-                item.SubItems.Add(total.ToString());
-                item.SubItems.Add($"{rate:F0}%");
-                listViewStatistics.Items.Add(item);
-
-                totalCompleted += completed;
-                totalCount += total;
+                var card = new StatRowCard { Width = cardWidth };
+                card.SetData(emoji, firstRecord.Name, completed, total, accent, emphasize: false);
+                _statCardsFlow.Controls.Add(card);
             }
+
+            totalCompleted += completed;
+            totalCount += total;
         }
 
-        // 加入總計
-        if (totalCount > 0)
+        if (_statCardsFlow != null)
         {
-            var totalRate = totalCount > 0 ? (totalCompleted * 100.0 / totalCount) : 0;
+            if (totalCount > 0)
+            {
+                var totalCard = new StatRowCard { Width = cardWidth };
+                totalCard.SetData("📊", "總計", totalCompleted, totalCount, AppTheme.Primary, emphasize: true);
+                _statCardsFlow.Controls.Add(totalCard);
+            }
+            else
+            {
+                _statCardsFlow.Controls.Add(new Label
+                {
+                    AutoSize = false,
+                    Width = cardWidth,
+                    Height = 44,
+                    Margin = new Padding(2, 10, 0, 0),
+                    Font = new Font(AppTheme.FontFamily, 9.5F),
+                    ForeColor = AppTheme.SecondaryText,
+                    Text = "今天還沒有提醒紀錄，等第一個提醒出現吧 🦊",
+                    TextAlign = ContentAlignment.MiddleLeft
+                });
+            }
 
-            var totalItem = new ListViewItem("📊 總計");
-            totalItem.SubItems.Add(totalCompleted.ToString());
-            totalItem.SubItems.Add(totalCount.ToString());
-            totalItem.SubItems.Add($"{totalRate:F0}%");
-            totalItem.Font = new Font(listViewStatistics.Font, FontStyle.Bold);
-            listViewStatistics.Items.Add(totalItem);
-
-            // 更新進度條
-            progressBarToday.Value = Math.Min(100, (int)totalRate);
-            lblProgressText.Text = $"{totalRate:F0}%";
+            _statCardsFlow.ResumeLayout(true);
         }
-        else
-        {
-            progressBarToday.Value = 0;
-            lblProgressText.Text = "0%";
-        }
 
-        listViewStatistics.EndUpdate();
+        // 今日成就進度：以「整個工作時段預計出現的提醒總數」為 100% 目標
+        var goalTarget = SettingsManager.Instance.GetDailyGoalTarget();
+        var goalCompleted = DailyAchievementCalculator.CountCompleted(
+            today,
+            settings.WorkdayStart,
+            settings.WorkdayEnd);
+        var goalPercent = goalTarget > 0
+            ? Math.Min(100, (int)Math.Round(goalCompleted * 100.0 / goalTarget))
+            : 0;
+        progressBarToday.Value = goalPercent;
+        lblProgressText.Text = goalTarget > 0
+            ? $"已完成 {goalCompleted} / {goalTarget} 次（整個工作時段目標）"
+            : "目前工作時段內沒有預計提醒";
 
         // 更新今日成就標題
-        string achievement = GetAchievementMessage(totalCompleted);
-        lblTodaySummary.Text = $"📊 今日成就 - {achievement}";
+        string achievement = GetAchievementMessage(goalPercent);
+        lblTodaySummary.Text = $"📊 今日成就 · {goalPercent}% - {achievement}";
 
-        // 更新連續天數（簡化版：看今天有沒有達到 50%）
+        // 工作時段內至少完成一半已觸發提醒，才算該日達標。
         int streakDays = CalculateStreakDays();
         lblStreakDays.Text = $"🔥 連續達標：{streakDays} 天";
 
         // 更新小狐狸訊息
-        lblFoxMessage.Text = GetFoxMessage(totalCompleted, streakDays);
+        lblFoxMessage.Text = GetFoxMessage(goalPercent, streakDays);
     }
 
     /// <summary>
-    /// 計算連續達標天數（簡化版）
+    /// 計算連續達標天數；今天尚未結束時不會提早中斷既有紀錄。
     /// </summary>
     private int CalculateStreakDays()
     {
-        // 簡化版：如果今天有完成至少一個提醒就算 1 天
-        var today = SettingsManager.Instance.GetTodayStatistics();
-        var totalCompleted = today.Records.Count(record => record.Status == ReminderStatus.Completed);
-
-        return totalCompleted > 0 ? 1 : 0;
+        var settings = SettingsManager.Instance.Settings;
+        return DailyAchievementCalculator.CalculateStreak(
+            SettingsManager.Instance.Statistics,
+            DateTime.Now,
+            settings.WorkdayStart,
+            settings.WorkdayEnd);
     }
 
     /// <summary>
-    /// 根據完成次數取得今日成就訊息
+    /// 根據今日成就達標百分比取得鼓勵訊息
     /// </summary>
-    private string GetAchievementMessage(int completed)
+    private string GetAchievementMessage(int percent)
     {
-        if (completed == 0)
+        if (percent <= 0)
         {
             return "加油！今天還沒開始～";
         }
-        else if (completed < 5)
+        else if (percent < 50)
         {
             return "不錯，已經開始養成習慣！";
         }
-        else if (completed < 10)
+        else if (percent < 100)
         {
             return "很棒，持續努力中！";
         }
@@ -992,9 +1078,13 @@ public partial class MainForm : Form
     /// <summary>
     /// 取得小狐狸鼓勵訊息
     /// </summary>
-    private string GetFoxMessage(int completed, int streakDays)
+    private string GetFoxMessage(int percent, int streakDays)
     {
-        if (completed == 0)
+        if (streakDays >= 7)
+        {
+            return $"🦊 小狐狸說：已經連續達標 {streakDays} 天了，你真的很有毅力！";
+        }
+        if (percent <= 0)
         {
             string[] messages = {
                 "🦊 小狐狸說：新的一天開始囉，一起養成好習慣吧！",
@@ -1003,7 +1093,7 @@ public partial class MainForm : Form
             };
             return messages[DateTime.Now.Second % messages.Length];
         }
-        else if (completed < 5)
+        else if (percent < 50)
         {
             string[] messages = {
                 "🦊 小狐狸說：不錯喔，繼續保持！",
@@ -1012,7 +1102,7 @@ public partial class MainForm : Form
             };
             return messages[DateTime.Now.Second % messages.Length];
         }
-        else if (completed < 10)
+        else if (percent < 100)
         {
             string[] messages = {
                 "🦊 小狐狸說：哇！你好棒，已經完成這麼多了！",
@@ -1146,14 +1236,11 @@ public partial class MainForm : Form
             Margin = Padding.Empty
         };
 
-        var fox = new Label
+        _headerFox = new FoxAnimationControl
         {
-            AutoSize = false,
-            Location = new Point(24, 13),
-            Size = new Size(48, 46),
-            Font = new Font(AppTheme.FontFamily, 25F),
-            Text = "🦊",
-            TextAlign = ContentAlignment.MiddleCenter
+            Location = new Point(14, 4),
+            Size = new Size(60, 62),
+            BackColor = AppTheme.CardBackground
         };
         var title = new Label
         {
@@ -1189,7 +1276,7 @@ public partial class MainForm : Form
             }
         };
 
-        header.Controls.Add(fox);
+        header.Controls.Add(_headerFox);
         header.Controls.Add(title);
         header.Controls.Add(subtitle);
         header.Controls.Add(_headerStatusLabel);
@@ -1313,6 +1400,12 @@ public partial class MainForm : Form
             button.BackColor = selected ? AppTheme.SelectedBackground : AppTheme.CardBackground;
             button.ForeColor = selected ? AppTheme.Primary : AppTheme.SecondaryText;
         }
+
+        // 切到健康紀錄時重新整理，確保資料最新且卡片寬度正確
+        if (section == panelStatistics && _statCardsFlow != null)
+        {
+            UpdateStatisticsDisplay();
+        }
     }
 
     private void BuildStatusPage()
@@ -1322,14 +1415,14 @@ public partial class MainForm : Form
         panelStatus.BackColor = AppTheme.WindowBackground;
         panelStatus.Padding = Padding.Empty;
 
-        var layout = new TableLayoutPanel
+        var layout = new ElevatedPanel
         {
             Dock = DockStyle.Fill,
             BackColor = AppTheme.WindowBackground,
             ColumnCount = 1,
             RowCount = 3,
             Margin = Padding.Empty,
-            Padding = Padding.Empty
+            Padding = new Padding(8, 6, 8, 12)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -1348,6 +1441,7 @@ public partial class MainForm : Form
         lblBigCountdown.Font = new Font(AppTheme.FontFamily, 38F, FontStyle.Bold);
         lblBigCountdown.Location = new Point(20, 45);
         lblBigCountdown.Size = new Size(270, 76);
+        lblBigCountdown.BackColor = AppTheme.CardBackground;
         lblNextReminderName.Font = new Font(AppTheme.FontFamily, 13F, FontStyle.Bold);
         lblNextReminderName.Location = new Point(330, 62);
         lblNextReminderName.Size = new Size(350, 34);
@@ -1455,19 +1549,19 @@ public partial class MainForm : Form
         panelSettings.BackColor = AppTheme.WindowBackground;
         panelSettings.AutoScroll = true;
 
-        var layout = new TableLayoutPanel
+        var layout = new ElevatedPanel
         {
             Dock = DockStyle.Top,
             AutoSize = false,
-            Height = 675,
+            Height = 720,
             ColumnCount = 1,
             RowCount = 4,
             BackColor = AppTheme.WindowBackground,
-            Padding = Padding.Empty,
+            Padding = new Padding(8, 6, 8, 12),
             Margin = Padding.Empty
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 420));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
 
@@ -1557,6 +1651,46 @@ public partial class MainForm : Form
             Text = "減少動畫",
             UseVisualStyleBackColor = true
         };
+
+        var workdayLabel = new Label
+        {
+            AutoSize = true,
+            Location = new Point(18, 90),
+            Font = new Font(AppTheme.FontFamily, 9F),
+            Text = "工作時段"
+        };
+        _workdayStartPicker = new DateTimePicker
+        {
+            Format = DateTimePickerFormat.Custom,
+            CustomFormat = "HH:mm",
+            ShowUpDown = true,
+            Location = new Point(96, 86),
+            Size = new Size(72, 26)
+        };
+        var workdayTo = new Label
+        {
+            AutoSize = true,
+            Location = new Point(176, 90),
+            Font = new Font(AppTheme.FontFamily, 9F),
+            Text = "～"
+        };
+        _workdayEndPicker = new DateTimePicker
+        {
+            Format = DateTimePickerFormat.Custom,
+            CustomFormat = "HH:mm",
+            ShowUpDown = true,
+            Location = new Point(200, 86),
+            Size = new Size(72, 26)
+        };
+        var workdayHint = new Label
+        {
+            AutoSize = true,
+            Location = new Point(286, 90),
+            Font = new Font(AppTheme.FontFamily, 8.5F),
+            ForeColor = AppTheme.SecondaryText,
+            Text = "（今日成就 100% 的計算基準）"
+        };
+
         generalCard.Controls.AddRange(new Control[]
         {
             chkStartWithWindows,
@@ -1564,7 +1698,12 @@ public partial class MainForm : Form
             lblSnoozeMinutes,
             numSnoozeMinutes,
             lblSnoozeUnit,
-            _reduceMotionCheckBox
+            _reduceMotionCheckBox,
+            workdayLabel,
+            _workdayStartPicker,
+            workdayTo,
+            _workdayEndPicker,
+            workdayHint
         });
 
         var doNotDisturbCard = new CardPanel
@@ -1669,14 +1808,14 @@ public partial class MainForm : Form
         panelStatistics.Controls.Clear();
         panelStatistics.BackColor = AppTheme.WindowBackground;
 
-        var layout = new TableLayoutPanel
+        var layout = new ElevatedPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
             BackColor = AppTheme.WindowBackground,
             Margin = Padding.Empty,
-            Padding = Padding.Empty
+            Padding = new Padding(8, 6, 8, 12)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
@@ -1692,11 +1831,12 @@ public partial class MainForm : Form
         lblTodaySummary.Font = new Font(AppTheme.FontFamily, 12F, FontStyle.Bold);
         lblStreakDays.Location = new Point(410, 22);
         lblStreakDays.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        progressBarToday.Location = new Point(22, 62);
-        progressBarToday.Size = new Size(580, 28);
+        progressBarToday.Location = new Point(22, 58);
+        progressBarToday.Size = new Size(580, 24);
         progressBarToday.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        lblProgressText.Location = new Point(620, 66);
-        lblProgressText.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        lblProgressText.Location = new Point(22, 92);
+        lblProgressText.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblProgressText.ForeColor = AppTheme.SecondaryText;
         summaryCard.Controls.Add(lblTodaySummary);
         summaryCard.Controls.Add(lblStreakDays);
         summaryCard.Controls.Add(progressBarToday);
@@ -1738,11 +1878,24 @@ public partial class MainForm : Form
             Text = "今日提醒明細",
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
-        listViewStatistics.Dock = DockStyle.Fill;
-        listViewStatistics.BorderStyle = BorderStyle.None;
-        listViewStatistics.BackColor = AppTheme.CardBackground;
-        listViewStatistics.Resize += (_, _) => ResizeListViewColumns();
-        detailLayout.Controls.Add(listViewStatistics, 0, 1);
+        _statCardsFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = AppTheme.CardBackground,
+            Padding = new Padding(0, 2, 0, 0),
+            Margin = Padding.Empty
+        };
+        _statCardsFlow.Resize += (_, _) =>
+        {
+            foreach (var card in _statCardsFlow.Controls.OfType<Control>())
+            {
+                card.Width = GetFlowCardWidth(_statCardsFlow);
+            }
+        };
+        detailLayout.Controls.Add(_statCardsFlow, 0, 1);
         detailCard.Controls.Add(detailLayout);
 
         layout.Controls.Add(summaryCard, 0, 0);
@@ -1949,9 +2102,12 @@ public partial class MainForm : Form
         ApplyRoundedRegion(btn, AppTheme.CornerRadius);
         btn.Resize += (_, _) => ApplyRoundedRegion(btn, AppTheme.CornerRadius);
 
-        // 滑鼠懸停效果
-        btn.MouseEnter += (s, e) => btn.BackColor = hoverColor;
-        btn.MouseLeave += (s, e) => btn.BackColor = normalColor;
+        // 滑鼠懸停：平滑過渡背景色
+        HoverGlow.Attach(
+            btn,
+            normalColor,
+            hoverColor,
+            () => !(_reduceMotionCheckBox?.Checked ?? SettingsManager.Instance.Settings.ReduceMotion));
     }
 
     private static void ApplyRoundedRegion(Control control, int radius)

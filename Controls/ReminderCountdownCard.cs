@@ -15,12 +15,13 @@ public sealed class ReminderCountdownCard : UserControl
     private readonly Label _intervalLabel;
     private readonly Label _remainingLabel;
     private readonly Label _nextTimeLabel;
+    private Color _accent = AppTheme.Primary;
 
     public ReminderCountdownCard()
     {
         BackColor = Color.FromArgb(255, 251, 248);
         DoubleBuffered = true;
-        Height = 60;
+        Height = 64;
         Margin = new Padding(0, 0, 0, 8);
 
         _emojiLabel = CreateLabel(new Point(14, 12), new Size(42, 36), 17F, FontStyle.Regular);
@@ -50,6 +51,7 @@ public sealed class ReminderCountdownCard : UserControl
         var item = timer.Item;
         var remaining = timer.RemainingTime;
         ReminderId = item.Id;
+        _accent = AppTheme.AccentFor(item.Type);
         _emojiLabel.Text = item.Emoji;
         _nameLabel.Text = item.Name;
         _intervalLabel.Text = !item.IsEnabled
@@ -76,6 +78,8 @@ public sealed class ReminderCountdownCard : UserControl
             _remainingLabel.ForeColor = AppTheme.Primary;
             _nextTimeLabel.Text = $"預計 {timer.NextTriggerTime:HH:mm}";
         }
+
+        Invalidate();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -83,6 +87,15 @@ public sealed class ReminderCountdownCard : UserControl
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = CreateRoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 10);
+
+        // 依提醒類型上色的左側色條，讓每一列一眼可辨識
+        e.Graphics.SetClip(path);
+        using (var accentBrush = new SolidBrush(_accent))
+        {
+            e.Graphics.FillRectangle(accentBrush, new Rectangle(0, 0, 5, Height));
+        }
+        e.Graphics.ResetClip();
+
         using var pen = new Pen(AppTheme.Border);
         e.Graphics.DrawPath(pen, path);
     }

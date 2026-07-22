@@ -40,7 +40,7 @@ partial class MainForm
         // 狀態頁面控制項
         this.panelStatus = new Panel();
         this.lblNextReminder = new Label();
-        this.lblBigCountdown = new Label();    
+        this.lblBigCountdown = new HealthReminder.Controls.AnimatedCountdownLabel();
         this.lblNextReminderName = new Label();
         this.listViewCountdown = new ListView();
         this.btnPauseAll = new Button();
@@ -69,7 +69,7 @@ partial class MainForm
         this.lblTodaySummary = new Label();
         this.listViewStatistics = new ListView();
         this.lblStreakDays = new Label();
-        this.progressBarToday = new ProgressBar();
+        this.progressBarToday = new HealthReminder.Controls.RoundedProgressBar();
         this.lblProgressText = new Label();
         this.lblFoxMessage = new Label();
 
@@ -148,13 +148,12 @@ partial class MainForm
         // 
         // lblBigCountdown
         // 
-        this.lblBigCountdown = new Label();
+        this.lblBigCountdown = new HealthReminder.Controls.AnimatedCountdownLabel();
         this.lblBigCountdown.Font = new Font("Microsoft JhengHei UI", 36F, FontStyle.Bold);
         this.lblBigCountdown.Location = new Point(10, 35);
         this.lblBigCountdown.Name = "lblBigCountdown";
         this.lblBigCountdown.Size = new Size(200, 60);
         this.lblBigCountdown.Text = "00:00";
-        this.lblBigCountdown.TextAlign = ContentAlignment.MiddleLeft;
 
         // 
         // lblNextReminderName
@@ -484,11 +483,10 @@ partial class MainForm
         // 
         // progressBarToday
         // 
-        this.progressBarToday = new ProgressBar();
+        this.progressBarToday = new HealthReminder.Controls.RoundedProgressBar();
         this.progressBarToday.Location = new Point(10, 65);
         this.progressBarToday.Name = "progressBarToday";
         this.progressBarToday.Size = new Size(350, 25);
-        this.progressBarToday.Style = ProgressBarStyle.Continuous;
 
         // 
         // lblProgressText
@@ -587,7 +585,7 @@ partial class MainForm
     // 狀態頁面
     private Panel panelStatus;
     private Label lblNextReminder;
-    private Label lblBigCountdown;
+    private HealthReminder.Controls.AnimatedCountdownLabel lblBigCountdown;
     private Label lblNextReminderName;
     private ListView listViewCountdown;
     private Button btnPauseAll;
@@ -620,7 +618,7 @@ partial class MainForm
     private Label lblTodaySummary;
     private ListView listViewStatistics;
     private Label lblStreakDays;
-    private ProgressBar progressBarToday;
+    private HealthReminder.Controls.RoundedProgressBar progressBarToday;
     private Label lblProgressText;
     private Label lblFoxMessage;
 }
