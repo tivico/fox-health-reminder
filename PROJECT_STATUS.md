@@ -114,7 +114,30 @@ Program / MainForm
 
 ### 2D Sprite 狐狸
 
-狐狸使用內嵌 `Resources/fox-sprites-v3.png`。此資源由 24 姿勢綠幕原圖挑選 8 個適合通知的姿勢，整理成 4×2 透明 Sprite Sheet；`FoxAnimationControl` 以 high-quality bicubic 與 Double Buffer 繪製。
+`FoxAnimationControl` 優先載入每個動作各自一張、每格固定 512×512 的單排透明 Sprite Sheet，並由圖片寬度自動計算影格數。各動作可使用不同播放間隔與影格順序。待機使用 `Resources/fox_idle.png`，目前由標準待機與清楚閉眼兩格組成，以每格 400 ms、`睜→睜→睜→閉→閉→閉` 的順序循環；睜眼與閉眼各停留 1.2 秒，完整循環 2.4 秒。喝水、護眼與伸展通知顯示期間會分別持續循環 `fox_drink.png`、`fox_eye_rest.png` 與 `fox_stretch.png`，不再只播一輪便退回待機；自訂提醒才使用待機眨眼。伸展依 `1→2→3→4→5→5→5→4→3→2→1` 播放，每格 160 ms。主畫面標題列提供「動畫預覽」，可直接切換待機、揮手、喝水、護眼與伸展。新圖資載入失敗時會先沿用 `Wait` 動畫，最後才退回內嵌的 `Resources/fox-sprites-v3.png` 4×2 白狐。繪製使用 high-quality bicubic 與 Double Buffer。
+
+目前橘色狐狸動畫素材進度：
+
+| 動作 | 正式資源 | 狀態 |
+| --- | --- | --- |
+| 待機 | `Resources/fox_idle.png` | 已更新為 2 格版本：既有標準待機＋2026-07-30 18:14 收到的完整閉眼圖；目前先求穩定眨眼，呼吸與擺尾暫緩 |
+| 揮手 | `Resources/fox_wave.png` | 已完成並接入，實際觀感明顯比初版眨眼順暢 |
+| 喝水 | `Resources/fox_drink.png` | 已完成並依喝水提醒自動播放 |
+| 眼睛休息 | `Resources/fox_eye_rest.png` | 已完成並依護眼提醒自動播放 |
+| 起身與伸展 | `Resources/fox_stretch.png` | 已完成 5 格並接入；包含既有待機母圖與 4 張新伸展影格，通知期間持續循環 |
+
+2026-07-30 16:29 收到的兩張待機／眨眼候選圖，因眼睛仍與母圖接近相同的上彎弧線而未採用。18:14 收到的新圖具有較清楚、接近水平的閉眼線條，已保留原始 1024×1024 PNG 於 `暫存`，並在不修改原圖的前提下正規化為 512×512 閉眼格，與既有標準待機格組成正式 `fox_idle.png`。舊版 4 格待機 Sprite Sheet 備份於 `artifacts/animation-backups/fox_idle-before-20260730-1814.png`。
+
+2026-07-30 19:15～19:16 收到 4 張逐格製作的伸展圖，已按原始 1024×1024 畫布等比例縮小、校正腳底基準線並與既有待機母圖組成 2560×512 的 `fox_stretch.png`；原始圖保留在 `暫存`。
+
+### 2026-07-30 橘狐動畫階段收尾
+
+- 白狐已由橘粉色狐狸取代，正式素材包含待機眨眼、揮手、喝水、護眼及起身伸展。
+- 待機依使用者實測調整為每格 400 ms 的 `睜→睜→睜→閉→閉→閉` 六拍循環。
+- 喝水、護眼與伸展通知會在視窗存在期間持續循環專屬動畫；自訂提醒使用待機眨眼。
+- 主畫面已提供動畫預覽視窗，可直接切換五種動畫驗收。
+- Release 建置為 0 警告、0 錯誤，自動驗證為 20/20 通過。
+- 下一階段先以實際使用感受為主，若發現速度、角色基準線或通知切換需要微調，再由本文件待辦繼續。
 
 狀態流程：
 
@@ -167,7 +190,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 
 ```text
 Release build: 0 warnings, 0 errors
-Verification: 16/16 passed
+Verification: 20/20 passed
 Published EXE smoke test: passed
 ```
 
@@ -266,28 +289,36 @@ Git 應追蹤：
 
 ### 待辦（依建議優先順序）
 
+**狐狸動畫素材**
+
+1. 在程式實際約 104×104 的顯示尺寸確認新版兩格待機眨眼效果；若角色輪廓切換仍太明顯，再針對閉眼格做局部修正。
+2. 呼吸與尾巴擺動暫緩；等能取得真正保持母圖一致的連續影格後，再加入待機動畫，避免為了湊四格產生晃動。
+3. 在動畫預覽與實際通知視窗確認伸展動畫的角色基準線、播放速度及最高點停留時間。
+4. 實測喝水、護眼與伸展通知是否會在視窗存在期間持續循環專屬動畫，自訂提醒則維持待機眨眼。
+5. 動畫素材確認後重新執行 Release 建置、20 項 Verification 與單檔發佈。
+
 **維運**
 
-1. 把 `fix/autostart-path-selfheal` 合回 `master`。
-2. 建立 `deploy.ps1`，一次完成「發佈單檔 → 覆蓋 `%LOCALAPPDATA%`」，避免改完程式忘記同步開機執行的版本。
+6. 把 `fix/autostart-path-selfheal` 合回 `master`。
+7. 建立 `deploy.ps1`，一次完成「發佈單檔 → 覆蓋 `%LOCALAPPDATA%`」，避免改完程式忘記同步開機執行的版本。
 
 **收尾與一致性**
 
-3. 將「減少動畫」傳入 `RoundedProgressBar.AnimationsEnabled` 與 `HoverGlow` 的開關參數（兩者已支援，`MainForm` 尚未全部接上）。
-4. 工作時段輸入驗證：目前下班早於上班時 `DailyAchievementCalculator` 會回傳 0 並顯示「尚未設定工作時段」，但設定頁未阻止使用者存下這種組合。
-5. 提醒項目較多時，統計與提醒清單仍會出現原生捲軸，可評估自繪捲軸。
+8. 將「減少動畫」傳入 `RoundedProgressBar.AnimationsEnabled` 與 `HoverGlow` 的開關參數（兩者已支援，`MainForm` 尚未全部接上）。
+9. 工作時段輸入驗證：目前下班早於上班時 `DailyAchievementCalculator` 會回傳 0 並顯示「尚未設定工作時段」，但設定頁未阻止使用者存下這種組合。
+10. 提醒項目較多時，統計與提醒清單仍會出現原生捲軸，可評估自繪捲軸。
 
 **功能與體驗**
 
-6. 實測 Windows 125%、150%、200% DPI 與多螢幕。
-7. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
-8. 加入 7 日、30 日趨勢圖。
-9. 支援每日指定時間、每週指定星期等進階排程。
-10. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
-11. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
-12. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
-13. 建立親友分享用 README／快速使用說明。
-14. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
+11. 實測 Windows 125%、150%、200% DPI 與多螢幕。
+12. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
+13. 加入 7 日、30 日趨勢圖。
+14. 支援每日指定時間、每週指定星期等進階排程。
+15. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
+16. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
+17. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
+18. 建立親友分享用 README／快速使用說明。
+19. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
 
 更細的階段工作與驗收清單請參考 `REFACTORING_PLAN.md`。
 
@@ -339,5 +370,5 @@ Git 應追蹤：
 
 ```text
 Release build: 0 warnings, 0 errors
-Verification: 16/16 passed
+Verification: 20/20 passed
 ```

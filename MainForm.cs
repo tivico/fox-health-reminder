@@ -1262,6 +1262,26 @@ public partial class MainForm : Form
             Text = "陪你喝水、休息眼睛，也記得起身走走"
         };
 
+        var animationPreviewButton = new Button
+        {
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            BackColor = AppTheme.SelectedBackground,
+            ForeColor = AppTheme.Primary,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font(AppTheme.FontFamily, 9F, FontStyle.Bold),
+            Location = new Point(628, 20),
+            Size = new Size(104, 34),
+            Text = "動畫預覽",
+            Cursor = Cursors.Hand,
+            UseVisualStyleBackColor = false
+        };
+        animationPreviewButton.FlatAppearance.BorderSize = 0;
+        animationPreviewButton.Click += (_, _) =>
+        {
+            using var preview = new FoxAnimationPreviewForm();
+            preview.ShowDialog(this);
+        };
+
         _headerStatusLabel = new Label
         {
             Anchor = AnchorStyles.Top | AnchorStyles.Right,
@@ -1276,12 +1296,15 @@ public partial class MainForm : Form
             if (_headerStatusLabel != null)
             {
                 _headerStatusLabel.Left = header.ClientSize.Width - _headerStatusLabel.Width - 24;
+                animationPreviewButton.Left =
+                    _headerStatusLabel.Left - animationPreviewButton.Width - 12;
             }
         };
 
         header.Controls.Add(_headerFox);
         header.Controls.Add(title);
         header.Controls.Add(subtitle);
+        header.Controls.Add(animationPreviewButton);
         header.Controls.Add(_headerStatusLabel);
         return header;
     }

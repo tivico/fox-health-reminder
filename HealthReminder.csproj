@@ -28,10 +28,18 @@
     <None Remove="Resources\water.ico" />
     <None Remove="Resources\eye.ico" />
     <None Remove="Resources\fox-sprites-v3.png" />
+    <None Remove="Resources\fox_*.png" />
     <EmbeddedResource Include="Resources\app.ico" LogicalName="HealthReminder.Resources.app.ico" />
     <EmbeddedResource Include="Resources\water.ico" LogicalName="HealthReminder.Resources.water.ico" />
     <EmbeddedResource Include="Resources\eye.ico" LogicalName="HealthReminder.Resources.eye.ico" />
     <EmbeddedResource Include="Resources\fox-sprites-v3.png" LogicalName="HealthReminder.Resources.fox-sprites-v3.png" />
+    <EmbeddedResource Include="Resources\fox_*.png">
+      <LogicalName>HealthReminder.Resources.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="HealthReminder.Verification" />
   </ItemGroup>
 
 </Project>

@@ -44,7 +44,6 @@ public sealed class ReminderPopupForm : Form
     private readonly System.Windows.Forms.Timer _autoCloseTimer;
     private readonly System.Windows.Forms.Timer _activityTimer;
     private readonly System.Windows.Forms.Timer _successTimer;
-    private readonly System.Windows.Forms.Timer _foxDialogueTimer;
     private readonly Stopwatch _animationWatch = new();
     private FoxAnimationControl? _foxAnimation;
     private Label? _messageLabel;
@@ -61,7 +60,6 @@ public sealed class ReminderPopupForm : Form
     private bool _suppressAction;
     private bool _activityStarted;
     private DateTimeOffset _activityEndsAtUtc;
-    private int _foxDialogueStep;
     private ReminderPopupAction _closingAction;
 
     public ReminderPopupForm(ReminderPopupRequest request, Screen screen)
@@ -99,20 +97,6 @@ public sealed class ReminderPopupForm : Form
             _successTimer.Stop();
             BeginClose(ReminderPopupAction.Completed);
         };
-        _foxDialogueTimer = new System.Windows.Forms.Timer { Interval = 700 };
-        _foxDialogueTimer.Tick += (_, _) =>
-        {
-            if (_foxDialogueStep == 0)
-            {
-                _foxAnimation?.Play(FoxAnimationState.Talk);
-                _foxDialogueStep = 1;
-            }
-            else
-            {
-                _foxAnimation?.Play(FoxAnimationState.Wait);
-                _foxDialogueTimer.Stop();
-            }
-        };
     }
 
     public event EventHandler<ReminderPopupActionEventArgs>? ActionSelected;
@@ -149,7 +133,11 @@ public sealed class ReminderPopupForm : Form
         {
             Bounds = _targetBounds;
             Opacity = 1;
-            if (_foxAnimation != null) _foxAnimation.AnimationEnabled = false;
+            if (_foxAnimation != null)
+            {
+                _foxAnimation.Play(GetReminderAnimationState());
+                _foxAnimation.AnimationEnabled = false;
+            }
             _autoCloseTimer.Start();
             if (_request.Item.ActionKind == ReminderActionKind.TimedActivity && _request.Item.AutoStartActivity)
             {
@@ -298,8 +286,6 @@ public sealed class ReminderPopupForm : Form
         _activityEndsAtUtc = DateTimeOffset.UtcNow.AddSeconds(durationSeconds);
         _autoCloseTimer.Stop();
         _successTimer.Stop();
-        _foxDialogueTimer.Stop();
-        _foxAnimation?.Play(FoxAnimationState.Wait);
 
         if (_primaryButton != null)
         {
@@ -324,7 +310,6 @@ public sealed class ReminderPopupForm : Form
         if (_isClosing) return;
 
         _autoCloseTimer.Stop();
-        _foxDialogueTimer.Stop();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
         if (_activityStatusLabel != null)
         {
@@ -369,7 +354,6 @@ public sealed class ReminderPopupForm : Form
 
         _activityStarted = false;
         _activityTimer.Stop();
-        _foxDialogueTimer.Stop();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
         if (_activityProgress != null)
         {
@@ -425,15 +409,29 @@ public sealed class ReminderPopupForm : Form
         {
             Top = _targetBounds.Top;
             Opacity = 1;
-            _foxAnimation?.Play(FoxAnimationState.Wave);
-            _foxDialogueStep = 0;
-            _foxDialogueTimer.Start();
+            _foxAnimation?.Play(GetReminderAnimationState());
             _autoCloseTimer.Start();
             if (_request.Item.ActionKind == ReminderActionKind.TimedActivity && _request.Item.AutoStartActivity)
             {
                 StartActivity();
             }
         }
+    }
+
+    private FoxAnimationState GetReminderAnimationState()
+    {
+        return GetReminderAnimationState(_request.Item.Type);
+    }
+
+    internal static FoxAnimationState GetReminderAnimationState(ReminderType type)
+    {
+        return type switch
+        {
+            ReminderType.Water => FoxAnimationState.Drink,
+            ReminderType.EyeRest => FoxAnimationState.EyeRest,
+            ReminderType.Stretch => FoxAnimationState.Stretch,
+            _ => FoxAnimationState.Wait
+        };
     }
 
     private void BeginClose(ReminderPopupAction action)
@@ -445,7 +443,6 @@ public sealed class ReminderPopupForm : Form
         _autoCloseTimer.Stop();
         _activityTimer.Stop();
         _successTimer.Stop();
-        _foxDialogueTimer.Stop();
         if (_request.ReduceMotion)
         {
             RaiseActionAndClose();
@@ -504,7 +501,6 @@ public sealed class ReminderPopupForm : Form
         _autoCloseTimer.Dispose();
         _activityTimer.Dispose();
         _successTimer.Dispose();
-        _foxDialogueTimer.Dispose();
         base.OnFormClosed(e);
     }
 

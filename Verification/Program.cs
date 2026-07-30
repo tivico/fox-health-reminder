@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using HealthReminder.Controls;
+using HealthReminder.Forms;
 using HealthReminder.Models;
 using HealthReminder.Services;
 using Newtonsoft.Json;
@@ -19,7 +22,11 @@ var checks = new List<(string Name, Action Run)>
     ("一次性提醒使用指定的絕對時間", VerifyOneTimeDeadline),
     ("一次性提醒稍後會重新啟用", VerifyOneTimeSnooze),
     ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime),
-    ("手動、勿擾與暫時暫停互不覆蓋", VerifyIndependentPauseReasons)
+    ("手動、勿擾與暫時暫停互不覆蓋", VerifyIndependentPauseReasons),
+    ("單排狐狸圖資會依 512 像素計算影格", VerifyFoxSingleRowFrames),
+    ("狐狸動畫可依動作使用不同播放速度", VerifyFoxAnimationIntervals),
+    ("提醒類型會持續使用對應的狐狸動畫", VerifyReminderAnimationMappings),
+    ("橘狐待機、揮手、喝水、護眼與伸展圖資已按正確名稱及尺寸嵌入", VerifyFoxAssets)
 };
 
 var failed = 0;
@@ -326,6 +333,62 @@ static void VerifyIndependentPauseReasons()
 
     timer.Resume(ReminderPauseReason.Temporary);
     Equal(false, timer.IsPaused);
+}
+
+static void VerifyFoxSingleRowFrames()
+{
+    Equal(6, FoxAnimationControl.GetSingleRowFrameCount(3072, 512));
+    Equal(8, FoxAnimationControl.GetSingleRowFrameCount(4096, 512));
+    Equal(10, FoxAnimationControl.GetSingleRowFrameCount(5120, 512));
+    Equal(0, FoxAnimationControl.GetSingleRowFrameCount(3072, 500));
+    Equal(0, FoxAnimationControl.GetSingleRowFrameCount(3000, 512));
+}
+
+static void VerifyFoxAnimationIntervals()
+{
+    Equal(400, FoxAnimationControl.GetFrameInterval(FoxAnimationState.Wait));
+    Equal(6, FoxAnimationControl.GetFrameSequenceLength(FoxAnimationState.Wait));
+    Equal(2400, FoxAnimationControl.GetCycleDurationMs(FoxAnimationState.Wait));
+    Equal(100, FoxAnimationControl.GetFrameInterval(FoxAnimationState.Wave));
+    Equal(7, FoxAnimationControl.GetFrameSequenceLength(FoxAnimationState.Wave));
+    Equal(700, FoxAnimationControl.GetCycleDurationMs(FoxAnimationState.Wave));
+    Equal(120, FoxAnimationControl.GetFrameInterval(FoxAnimationState.Drink));
+    Equal(9, FoxAnimationControl.GetFrameSequenceLength(FoxAnimationState.Drink));
+    Equal(1080, FoxAnimationControl.GetCycleDurationMs(FoxAnimationState.Drink));
+    Equal(140, FoxAnimationControl.GetFrameInterval(FoxAnimationState.EyeRest));
+    Equal(9, FoxAnimationControl.GetFrameSequenceLength(FoxAnimationState.EyeRest));
+    Equal(1260, FoxAnimationControl.GetCycleDurationMs(FoxAnimationState.EyeRest));
+    Equal(160, FoxAnimationControl.GetFrameInterval(FoxAnimationState.Stretch));
+    Equal(11, FoxAnimationControl.GetFrameSequenceLength(FoxAnimationState.Stretch));
+    Equal(1760, FoxAnimationControl.GetCycleDurationMs(FoxAnimationState.Stretch));
+}
+
+static void VerifyReminderAnimationMappings()
+{
+    Equal(FoxAnimationState.Drink, ReminderPopupForm.GetReminderAnimationState(ReminderType.Water));
+    Equal(FoxAnimationState.EyeRest, ReminderPopupForm.GetReminderAnimationState(ReminderType.EyeRest));
+    Equal(FoxAnimationState.Stretch, ReminderPopupForm.GetReminderAnimationState(ReminderType.Stretch));
+    Equal(FoxAnimationState.Wait, ReminderPopupForm.GetReminderAnimationState(ReminderType.Custom));
+}
+
+static void VerifyFoxAssets()
+{
+    VerifyEmbeddedPng("HealthReminder.Resources.fox_idle.png", 1024, 512);
+    VerifyEmbeddedPng("HealthReminder.Resources.fox_wave.png", 2048, 512);
+    VerifyEmbeddedPng("HealthReminder.Resources.fox_drink.png", 2048, 512);
+    VerifyEmbeddedPng("HealthReminder.Resources.fox_eye_rest.png", 2048, 512);
+    VerifyEmbeddedPng("HealthReminder.Resources.fox_stretch.png", 2560, 512);
+}
+
+static void VerifyEmbeddedPng(string resourceName, int expectedWidth, int expectedHeight)
+{
+    using var stream = typeof(FoxAnimationControl).Assembly.GetManifestResourceStream(resourceName)
+        ?? throw new InvalidOperationException($"找不到內嵌圖資：{resourceName}");
+
+    Span<byte> header = stackalloc byte[24];
+    stream.ReadExactly(header);
+    Equal(expectedWidth, BinaryPrimitives.ReadInt32BigEndian(header[16..20]));
+    Equal(expectedHeight, BinaryPrimitives.ReadInt32BigEndian(header[20..24]));
 }
 
 static ReminderRecord NewRecord(ReminderStatus status)
