@@ -144,6 +144,9 @@ public partial class MainForm : Form
         _reminderService.OnCountdownTick += ReminderService_OnCountdownTick;
         _reminderService.Initialize();
 
+        // 每次啟動校正開機自啟路徑，避免搬移或重新發佈後登錄項指向舊檔而失效
+        SettingsManager.Instance.SyncStartWithWindowsPath();
+
         // 檢查是否需要最小化啟動
         var settings = SettingsManager.Instance.Settings;
         var forceShow = Environment.GetCommandLineArgs()

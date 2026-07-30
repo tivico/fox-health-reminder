@@ -298,28 +298,29 @@ public class SettingsManager
         Statistics.RemoveAll(s => s.Date < cutoff);
     }
 
+    private const string RunKeyPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "HealthReminder";
+
     /// <summary>
     /// 設定開機自動啟動
     /// </summary>
     public void SetStartWithWindows(bool enabled)
     {
         Settings.StartWithWindows = enabled;
-        
+
         try
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
-            
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
+
             if (key != null)
             {
                 if (enabled)
                 {
-                    var exePath = Application.ExecutablePath;
-                    key.SetValue("HealthReminder", $"\"{exePath}\"");
+                    key.SetValue(RunValueName, $"\"{Application.ExecutablePath}\"");
                 }
                 else
                 {
-                    key.DeleteValue("HealthReminder", false);
+                    key.DeleteValue(RunValueName, false);
                 }
             }
         }
@@ -329,5 +330,40 @@ public class SettingsManager
         }
 
         Save();
+    }
+
+    /// <summary>
+    /// 校正開機自動啟動的登錄項，讓它永遠指向目前實際執行的執行檔。
+    /// 避免搬移資料夾或重新發佈後，登錄項仍指向已不存在的舊路徑而失效。
+    /// </summary>
+    public void SyncStartWithWindowsPath()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
+            if (key == null) return;
+
+            var registered = key.GetValue(RunValueName) as string;
+
+            if (!Settings.StartWithWindows)
+            {
+                // 設定已關閉，但登錄項還留著就順手清掉，兩邊保持一致。
+                if (registered != null)
+                {
+                    key.DeleteValue(RunValueName, false);
+                }
+                return;
+            }
+
+            var expected = $"\"{Application.ExecutablePath}\"";
+            if (!string.Equals(registered, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                key.SetValue(RunValueName, expected);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"校正開機啟動路徑失敗: {ex.Message}");
+        }
     }
 }
