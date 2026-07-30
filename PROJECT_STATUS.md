@@ -1,7 +1,8 @@
 # HealthReminder 專案現況、技術與成果
 
-更新日期：2026-07-21  
-功能基準 Commit：`5b6ae34`（`feat: add flexible tasks and animated fox activities`）
+更新日期：2026-07-30  
+功能基準 Commit：`dcc56ca`（`fix: stop the big countdown from jittering every second`）  
+目前分支：`fix/autostart-path-selfheal`（尚未合回 `master`）
 
 ## 1. 專案定位
 
@@ -38,14 +39,23 @@ Program / MainForm
 │  ├─ ReminderEditorForm       通用任務新增與編輯
 │  └─ ReminderPopupForm        互動式通知與活動倒數
 ├─ Controls
-│  ├─ ReminderCardControl      設定卡片
-│  ├─ ReminderCountdownCard    首頁倒數卡片
+│  ├─ ReminderCardControl      設定卡片（含類型色條）
+│  ├─ ReminderCountdownCard    首頁倒數卡片（含類型色條）
+│  ├─ StatRowCard              統計頁單列卡片與完成率小進度條
+│  ├─ RoundedProgressBar       圓角漸層進度條，取代原生 ProgressBar
+│  ├─ AnimatedCountdownLabel   固定寬度數字格的大字倒數
 │  ├─ ToggleSwitch             鍵盤可操作的開關
-│  └─ FoxAnimationControl      像素狐狸 Sprite 動畫
+│  └─ FoxAnimationControl      狐狸 Sprite 動畫
+├─ UI
+│  ├─ AppTheme                 顏色、字型與類型強調色 Token
+│  ├─ CardPanel                圓角卡片容器
+│  ├─ ElevatedPanel            在卡片後方繪製柔和陰影的版面容器
+│  └─ HoverGlow                滑鼠進出時平滑過渡背景色
 ├─ Services
 │  ├─ ReminderService          排程、暫停、稍後與狀態轉移
 │  ├─ NotificationService      通知佇列，同時只顯示一張
-│  ├─ SettingsManager          設定、統計、遷移與原子寫入
+│  ├─ SettingsManager          設定、統計、遷移、原子寫入與開機自啟校正
+│  ├─ DailyAchievementCalculator 工作時段目標、完成數與連續達標的純計算
 │  └─ ReminderCollectionNormalizer
 ├─ Models
 │  ├─ ReminderItem             通用排程與任務定義
@@ -136,8 +146,18 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 主視窗目前為 920×640，包含：
 
 - 今日總覽：下一個提醒、即時倒數卡片、快速暫停。
-- 提醒與設定：卡片式提醒管理、通用新增／編輯視窗、一般與勿擾設定。
-- 健康紀錄：今日完成率、鼓勵訊息與各提醒統計。
+- 提醒與設定：卡片式提醒管理、通用新增／編輯視窗、一般與勿擾設定、工作時段。
+- 健康紀錄：今日成就進度、鼓勵訊息與各提醒統計卡片。
+
+視覺打磨已完成的項目：
+
+- `ElevatedPanel` 在卡片後方繪製多層柔和陰影，卡片不再平貼背景，同時柔化圓角邊緣。
+- 原生 `ProgressBar` 換成 `RoundedProgressBar`，圓角漸層並具備 ease-out 補間；極小數值仍維持膠囊外觀。
+- 提醒卡片與倒數卡片加上依 `ReminderType` 上色的左側色條，顏色統一由 `AppTheme.AccentFor` 提供。
+- 統計頁「今日提醒明細」由原生 `ListView` 改為 `StatRowCard` 卡片列，附完成率小進度條與高亮總計列，預設三個提醒時不需捲動。
+- 主視窗標題的靜態狐狸 Emoji 換成 `FoxAnimationControl`，並改用 high-quality bicubic 縮放。
+- 按鈕滑鼠停留改用 `HoverGlow` 平滑過渡背景色。
+- 「減少動畫」已接上狐狸動畫與大字倒數；`RoundedProgressBar` 與 `HoverGlow` 已具備開關參數，`MainForm` 尚未全部傳入。
 
 已完成 920×640 實際畫面檢查。待補項目包括 125%、150%、200% DPI 實機驗證，以及完整鍵盤 Focus 視覺檢查。
 
@@ -204,6 +224,24 @@ artifacts\publish\win-x64-single-file\HealthReminder.exe
 
 暫不啟用 trimming，避免 WinForms、Newtonsoft.Json 或反射路徑被錯誤裁剪。
 
+### 自用機器的部署位置與開機自啟
+
+開機自啟是把執行檔路徑寫進 `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` 的 `HealthReminder` 值。過去這個值是在使用者勾選「開機自動啟動」的當下寫入，因此會指向當時正在執行的建置；一旦該路徑消失（例如 `bin\Debug` 被清掉），Windows 登入時就靜默失敗，程式不會出現在背景。
+
+現在的做法：
+
+- 自用的正式單檔固定放在 `%LOCALAPPDATA%\HealthReminder\HealthReminder.exe`，不隨專案資料夾清理而消失。
+- `SettingsManager.SyncStartWithWindowsPath()` 在 `MainForm` 載入時執行，把登錄值改寫為目前實際執行檔路徑；若設定已關閉則清除殘留登錄值，讓設定與登錄兩邊一致。
+
+因此改完程式碼後要讓開機執行的版本跟著更新，需重新發佈並覆蓋該位置：
+
+```powershell
+dotnet publish .\HealthReminder.csproj -c Release -p:PublishProfile=PortableSingleFile
+Copy-Item .\artifacts\publish\win-x64-single-file\HealthReminder.exe "$env:LOCALAPPDATA\HealthReminder\HealthReminder.exe" -Force
+```
+
+分享給親友時仍只需要交付 `artifacts` 內的單一 EXE，對方放在任何位置皆可執行。
+
 ## 11. 專案檔案政策
 
 Git 應追蹤：
@@ -226,15 +264,30 @@ Git 應追蹤：
 
 ## 12. 已知限制與下一步
 
-優先順序建議：
+### 待辦（依建議優先順序）
 
-1. 實測 Windows 125%、150%、200% DPI 與多螢幕。
-2. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
-3. 加入 7 日、30 日趨勢圖與更完整的連續達標演算法。
-4. 支援每日指定時間、每週指定星期等進階排程。
-5. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
-6. 建立親友分享用 README／快速使用說明。
-7. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
+**維運**
+
+1. 把 `fix/autostart-path-selfheal` 合回 `master`。
+2. 建立 `deploy.ps1`，一次完成「發佈單檔 → 覆蓋 `%LOCALAPPDATA%`」，避免改完程式忘記同步開機執行的版本。
+
+**收尾與一致性**
+
+3. 將「減少動畫」傳入 `RoundedProgressBar.AnimationsEnabled` 與 `HoverGlow` 的開關參數（兩者已支援，`MainForm` 尚未全部接上）。
+4. 工作時段輸入驗證：目前下班早於上班時 `DailyAchievementCalculator` 會回傳 0 並顯示「尚未設定工作時段」，但設定頁未阻止使用者存下這種組合。
+5. 提醒項目較多時，統計與提醒清單仍會出現原生捲軸，可評估自繪捲軸。
+
+**功能與體驗**
+
+6. 實測 Windows 125%、150%、200% DPI 與多螢幕。
+7. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
+8. 加入 7 日、30 日趨勢圖。
+9. 支援每日指定時間、每週指定星期等進階排程。
+10. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
+11. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
+12. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
+13. 建立親友分享用 README／快速使用說明。
+14. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
 
 更細的階段工作與驗收清單請參考 `REFACTORING_PLAN.md`。
 
@@ -249,3 +302,42 @@ Git 應追蹤：
 - `*.csproj.user`、`*.pubxml.user` 等個人環境設定。
 
 已保留原始需求文件、正式資源、原始碼、驗證專案、重構計畫、`PortableSingleFile.pubxml`，以及目前可直接分享的正式單檔 EXE。清理後重新執行 Release 建置為 0 警告、0 錯誤，驗證為 10/10 通過。
+
+## 14. 2026-07-30 UI 打磨與問題修正紀錄
+
+本次以「不動排程與資料邏輯、只改 UI 層」為原則進行視覺打磨，並修掉兩個實際問題。
+
+### 視覺打磨
+
+依序完成卡片陰影、圓角漸層進度條、卡片類型色條、狐狸素材更新、狐狸上主視窗、統計頁卡片化，以及大字倒數與按鈕 hover 的動畫。細節見第 8 節。
+
+狐狸素材改用使用者提供的 24 姿勢綠幕原圖：以 chroma-key 去背並抑制綠色溢色，自動偵測每隻的邊界，挑選 8 個姿勢後統一縮放、水平置中、置底對齊，輸出為 `Resources/fox-sprites-v3.png`（4×2，每格 240×240）。置底對齊可避免逐格播放時角色忽高忽低。
+
+### 今日成就改為工作時段目標型
+
+原本進度條的分母是「到目前為止已觸發的提醒數」，因此一早完成單一提醒就會顯示 100%，失去意義。改為以整個工作時段預計出現的提醒總數為 100% 目標：
+
+- 新增 `AppSettings.WorkdayStart` 與 `WorkdayEnd`，預設 09:00–18:00，可在設定頁調整，因為每個人下班時間不同。
+- 計算集中在 `DailyAchievementCalculator`，同時處理工作時段驗證、時段外紀錄排除與跨日連續達標。
+- 畫面同時顯示百分比與「已完成 N / M 次」，避免只有百分比而看不出實際數量。
+
+### 修正：開機自啟指向已不存在的執行檔
+
+登錄值原本停留在啟用當下的建置路徑，`bin\Debug` 被清除後 Windows 登入時靜默失敗。新增 `SettingsManager.SyncStartWithWindowsPath()` 於啟動時校正路徑，並把自用正式版固定放在 `%LOCALAPPDATA%`。詳見第 10 節。
+
+驗證方式：故意把登錄值改成不存在的路徑後啟動程式，確認登錄值被自動改寫回實際執行檔路徑。
+
+### 修正：大字倒數每秒抖動
+
+`AnimatedCountdownLabel` 初版每秒重新排版整串文字，因為字型數字並非等寬，冒號與後續數字會隨數字寬度左右位移；同時整串一起垂直滑動，且半透明文字使用 ClearType 造成彩邊。
+
+改為每個字元佔用固定寬度格子（數字統一採用最寬數字的寬度）、只有實際改變的字元做交叉淡入、逐格裁切避免溢出，並改用灰階抗鋸齒。
+
+驗證方式：擷取連續影格後以像素分析比對字元墨水區塊位置，確認前四個字元位置完全一致、冒號固定不動，變動數字的墨水中心維持在同一像素位置。
+
+### 本次驗證結果
+
+```text
+Release build: 0 warnings, 0 errors
+Verification: 16/16 passed
+```
