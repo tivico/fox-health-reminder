@@ -41,9 +41,11 @@ Name: "desktopicon"; Description: "建立桌面捷徑"; GroupDescription: "其�
 
 [Files]
 Source: "..\artifacts\publish\win-x64-single-file\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\使用說明.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--show"; WorkingDir: "{app}"
+Name: "{group}\使用說明"; Filename: "{app}\使用說明.txt"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--show"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]

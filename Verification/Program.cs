@@ -26,7 +26,11 @@ var checks = new List<(string Name, Action Run)>
     ("單排狐狸圖資會依 512 像素計算影格", VerifyFoxSingleRowFrames),
     ("狐狸動畫可依動作使用不同播放速度", VerifyFoxAnimationIntervals),
     ("提醒類型會持續使用對應的狐狸動畫", VerifyReminderAnimationMappings),
-    ("橘狐待機、揮手、喝水、護眼與伸展圖資已按正確名稱及尺寸嵌入", VerifyFoxAssets)
+    ("通知 Alt 快捷鍵與 Esc 對應正確操作", VerifyReminderKeyboardMappings),
+    ("橘狐待機、揮手、喝水、護眼與伸展圖資已按正確名稱及尺寸嵌入", VerifyFoxAssets),
+    ("沒有 portable.flag 時使用 AppData", VerifyDefaultStorageLocation),
+    ("portable.flag 會先驗證 Data 寫入權限", VerifyWritablePortableStorage),
+    ("可攜 Data 無法寫入時要求明確 fallback", VerifyBlockedPortableStorage)
 };
 
 var failed = 0;
@@ -371,6 +375,31 @@ static void VerifyReminderAnimationMappings()
     Equal(FoxAnimationState.Wait, ReminderPopupForm.GetReminderAnimationState(ReminderType.Custom));
 }
 
+static void VerifyReminderKeyboardMappings()
+{
+    Equal<ReminderPopupKeyboardCommand?>(
+        ReminderPopupKeyboardCommand.Primary,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.S, ReminderActionKind.TimedActivity));
+    Equal<ReminderPopupKeyboardCommand?>(
+        ReminderPopupKeyboardCommand.Primary,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.C, ReminderActionKind.Manual));
+    Equal<ReminderPopupKeyboardCommand?>(
+        ReminderPopupKeyboardCommand.Snooze,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.L, ReminderActionKind.Manual));
+    Equal<ReminderPopupKeyboardCommand?>(
+        ReminderPopupKeyboardCommand.Dismiss,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.K, ReminderActionKind.Manual));
+    Equal<ReminderPopupKeyboardCommand?>(
+        ReminderPopupKeyboardCommand.Dismiss,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Escape, ReminderActionKind.TimedActivity));
+    Equal<ReminderPopupKeyboardCommand?>(
+        null,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.C, ReminderActionKind.TimedActivity));
+    Equal<ReminderPopupKeyboardCommand?>(
+        null,
+        ReminderPopupForm.GetKeyboardCommand(Keys.Alt | Keys.S, ReminderActionKind.Manual));
+}
+
 static void VerifyFoxAssets()
 {
     VerifyEmbeddedPng("HealthReminder.Resources.fox_idle.png", 1024, 512);
@@ -378,6 +407,72 @@ static void VerifyFoxAssets()
     VerifyEmbeddedPng("HealthReminder.Resources.fox_drink.png", 2048, 512);
     VerifyEmbeddedPng("HealthReminder.Resources.fox_eye_rest.png", 2048, 512);
     VerifyEmbeddedPng("HealthReminder.Resources.fox_stretch.png", 2560, 512);
+}
+
+static void VerifyDefaultStorageLocation()
+{
+    WithTemporaryDirectory(root =>
+    {
+        var appData = Path.Combine(root, "AppData");
+        var result = StorageLocationResolver.Probe(root, appData);
+
+        Equal(false, result.PortableRequested);
+        Equal(false, result.PortableAvailable);
+        Equal(Path.GetFullPath(appData), result.SelectPreferred().Folder);
+        Equal(false, result.SelectPreferred().IsPortable);
+    });
+}
+
+static void VerifyWritablePortableStorage()
+{
+    WithTemporaryDirectory(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "portable.flag"), string.Empty);
+        var result = StorageLocationResolver.Probe(root, Path.Combine(root, "AppData"));
+
+        Equal(true, result.PortableRequested);
+        Equal(true, result.PortableAvailable);
+        Equal(true, result.SelectPreferred().IsPortable);
+        Equal(Path.Combine(Path.GetFullPath(root), "Data"), result.SelectPreferred().Folder);
+        Equal(0, Directory.GetFiles(result.PortableFolder).Length);
+    });
+}
+
+static void VerifyBlockedPortableStorage()
+{
+    WithTemporaryDirectory(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "portable.flag"), string.Empty);
+        File.WriteAllText(Path.Combine(root, "Data"), "阻止建立同名資料夾");
+        var result = StorageLocationResolver.Probe(root, Path.Combine(root, "AppData"));
+
+        Equal(true, result.PortableRequested);
+        Equal(false, result.PortableAvailable);
+        Equal(false, result.SelectAppDataFallback().IsPortable);
+        Equal(true, !string.IsNullOrWhiteSpace(result.FailureReason));
+        Equal(true, !string.IsNullOrWhiteSpace(result.SelectAppDataFallback().Notice));
+    });
+}
+
+static void WithTemporaryDirectory(Action<string> action)
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        "HealthReminderVerification",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+
+    try
+    {
+        action(root);
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, true);
+        }
+    }
 }
 
 static void VerifyEmbeddedPng(string resourceName, int expectedWidth, int expectedHeight)

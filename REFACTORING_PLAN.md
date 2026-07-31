@@ -176,10 +176,10 @@ HealthReminder/
 - [ ] 評估 single-file 發佈，實際驗證圖示、托盤與啟動速度。
 - [ ] 若 single-file 不穩定，採用完整資料夾發佈，不以單檔為硬性目標。
 - [ ] 產生乾淨的分享資料夾與 ZIP，不包含 PDB、obj、測試檔與重複 Runtime。
-- [ ] 提供簡短 `使用說明.txt`。
+- [x] 提供簡短 `使用說明.txt`。
 - [ ] 視需要提供 `啟動小狐狸.bat`，但不得成為唯一啟動方法。
 - [ ] 測試全新 Windows 使用者環境，不依賴開發電腦已安裝的 SDK 或 Runtime。
-- [ ] 測試含中文與空白的安裝路徑。
+- [x] 以發布 EXE 的 `--smoke-test` 自動驗證含中文與空白的執行路徑。
 - [ ] 測試資料夾移動後的開機啟動設定。
 
 完成條件：
@@ -482,7 +482,7 @@ Disabled background #F2ECE8
 
 - [x] 建立獨立的 `PortableSingleFile.pubxml`，不污染一般 Debug 建置。
 - [x] 將 app、water、eye 等圖示改為 Assembly Embedded Resource，避免單檔旁仍需 `Resources` 資料夾。
-- [ ] 正式分享包預設只包含 EXE 與簡短使用說明。
+- [x] 正式分享資料夾包含親友安裝程式與簡短 `使用說明.txt`。
 - [ ] 實測沒有安裝 .NET Runtime 的 Windows 10／11。
 - [x] 啟用 single-file 壓縮並記錄目前 win-x64 穩定版約 68.5 MB；後續再補無壓縮基準。
 - [x] 第一版保持 `PublishTrimmed=false`；目前 Newtonsoft.Json、WinForms 與反射路徑尚未完成 trimming 相容驗證。
@@ -491,9 +491,9 @@ Disabled background #F2ECE8
 
 ### 可攜模式寫入權限
 
-- [ ] 偵測到 `portable.flag` 時，先在 `Data` 資料夾建立並刪除唯一命名的測試檔。
-- [ ] 若不可寫入，顯示「改用 AppData」或「結束程式」，不可直接崩潰。
-- [ ] 不無聲切換資料位置；畫面必須能查看目前設定與統計實際儲存位置。
+- [x] 偵測到 `portable.flag` 時，先在 `Data` 資料夾建立並刪除唯一命名的測試檔。
+- [x] 若不可寫入，顯示「改用 AppData」或「結束程式」，不可直接崩潰。
+- [x] 不無聲切換資料位置；設定頁可查看目前設定與統計實際儲存位置。
 - [ ] 測試位於 `C:\Program Files`、唯讀資料夾、中文路徑與空白路徑時的行為。
 
 ## 12. 通用任務、活動倒數與角色通知
@@ -543,5 +543,5 @@ Disabled background #F2ECE8
 - [x] 「減少動畫」同步停用狐狸、倒數、進度條與按鈕 Hover 補間。
 - [x] 今日成就以有效工作時段內的提醒為目標，並驗證結束時間晚於開始時間。
 - [x] 連續達標改為逐日計算工作時段內至少 50% 的提醒完成率。
-- [ ] 可用鍵盤啟動計時、完成、稍後與略過。
+- [x] 可用鍵盤 Tab／Enter／Esc 與 Alt 快捷鍵啟動計時、完成、稍後與略過。
 - [x] 至少驗證：持續手動、持續計時、一次性手動、一次性計時四種組合。

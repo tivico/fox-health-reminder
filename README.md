@@ -15,6 +15,8 @@
 - 🌙 **勿擾模式** - 設定午休時間自動暫停提醒
 - 📊 **今日統計** - 追蹤完成次數，增加成就感
 - 🚀 **開機自啟動** - 可選擇是否隨 Windows 啟動
+- ⌨️ **鍵盤與螢幕閱讀器** - 通知可用 Tab、Enter、Esc 與 Alt 快捷鍵操作
+- 💾 **AppData／可攜模式** - 設定頁顯示實際資料位置，可用 `portable.flag` 切換
 
 ## 📋 系統需求
 
@@ -62,17 +64,20 @@
 .\build-release.ps1
 ```
 
-腳本會依序執行 Release 建置、Verification、self-contained 單檔發布與安裝包編譯。成品位於：
+腳本會依序執行 Release 建置、Verification、self-contained 單檔發布、安裝包編譯與發布成品驗證。親友分享資料夾包含：
 
 ```text
 artifacts\installer\狐狸健康提醒安裝程式.exe
+artifacts\installer\使用說明.txt
 ```
+
+詳細環境、DPI、多螢幕、鍵盤及 SmartScreen 驗收方式請參考 `Verification\RELEASE_CHECKLIST.md`。
 
 ## 📖 使用說明
 
 ### 首次啟動
 
-程式啟動後會自動縮小到右下角系統托盤（時鐘旁邊的小圖示區域）。
+從安裝程式建立的桌面或開始功能表捷徑啟動時，主畫面會直接顯示。開機自動啟動時則會安靜縮小到右下角系統托盤。
 
 ### 基本操作
 
@@ -80,7 +85,7 @@ artifacts\installer\狐狸健康提醒安裝程式.exe
 |------|------|
 | 雙擊托盤圖示 | 開啟主視窗 |
 | 右鍵托盤圖示 | 顯示快捷選單 |
-| 點擊通知氣泡 | 標記完成或稍後提醒 |
+| 通知中的按鈕 | 完成、開始活動、稍後或略過 |
 | 點擊視窗 X 按鈕 | 縮小到托盤（不會關閉程式） |
 
 ### 預設提醒間隔
@@ -95,12 +100,26 @@ artifacts\installer\狐狸健康提醒安裝程式.exe
 
 ### 設定說明
 
-在「設定」頁籤可以調整：
+在「提醒與設定」頁面可以調整：
 
-- **提醒項目**：啟用/停用、修改間隔時間、自訂訊息
+- **提醒項目**：啟用／停用、修改間隔或一次性時間、自訂訊息與活動秒數
 - **稍後提醒延遲**：預設 10 分鐘
 - **勿擾模式**：設定午休時間（如 12:00-13:00）自動暫停
 - **開機自動啟動**：隨 Windows 啟動
+- **減少動畫**：停用狐狸逐格、倒數與按鈕補間
+- **通知取得鍵盤焦點**：通知出現後可直接以 Enter、Esc 或 Alt 快捷鍵操作
+- **資料位置**：顯示目前使用 AppData 或可攜模式的實際資料夾
+
+### 通知鍵盤操作
+
+| 按鍵 | 操作 |
+|------|------|
+| Tab／Shift+Tab | 切換通知按鈕 |
+| Enter | 執行目前按鈕或主要操作 |
+| Esc、Alt+K | 略過 |
+| Alt+S | 開始計時活動 |
+| Alt+C | 完成手動提醒 |
+| Alt+L | 稍後提醒 |
 
 ## 📁 專案結構
 
@@ -108,16 +127,21 @@ artifacts\installer\狐狸健康提醒安裝程式.exe
 HealthReminder/
 ├── Program.cs              # 程式進入點
 ├── MainForm.cs             # 主視窗邏輯
-├── MainForm.Designer.cs    # 主視窗 UI 設計
+├── build-release.ps1       # 一鍵建置、驗證、發布與產生安裝包
+├── Controls/               # 卡片、倒數、進度條、Toggle 與狐狸動畫
+├── Forms/                  # 提醒編輯、通知與開發預覽視窗
 ├── Models/
 │   ├── ReminderItem.cs     # 提醒項目模型
 │   ├── ReminderRecord.cs   # 提醒紀錄模型
 │   └── AppSettings.cs      # 應用程式設定
 ├── Services/
-│   ├── ReminderService.cs  # 提醒計時服務
-│   └── SettingsManager.cs  # 設定檔管理
-└── Resources/
-    └── app.ico             # 應用程式圖示（需自行準備）
+│   ├── ReminderService.cs          # 提醒計時與暫停服務
+│   ├── NotificationService.cs      # 通知佇列
+│   ├── SettingsManager.cs          # 設定、統計與資料遷移
+│   └── StorageLocationResolver.cs  # AppData／可攜模式寫入探測
+├── Resources/              # 內嵌圖示與狐狸 Sprite
+├── Verification/           # 自動驗證與發布人工驗收清單
+└── installer/              # Inno Setup 親友安裝包腳本
 ```
 
 ## ⚙️ 設定檔位置
@@ -128,23 +152,16 @@ HealthReminder/
 %APPDATA%\HealthReminder\statistics.json
 ```
 
-## 🎨 自訂圖示
-
-請在 `Resources` 資料夾放置 `app.ico` 檔案作為應用程式圖示。
-
-建議圖示規格：
-- 格式：ICO
-- 尺寸：包含 16x16, 32x32, 48x48, 256x256
-
-可使用免費工具如 [IcoFX](https://icofx.ro/) 或線上轉換工具製作。
+若程式旁存在 `portable.flag`，會先在同層 `Data` 建立並刪除唯一測試檔；確認可寫後才使用可攜模式。若無法寫入，程式會明確詢問要改用 AppData 或結束，不會無聲切換。實際使用的位置會顯示在「提醒與設定」頁面。
 
 ## 🔑 技術重點
 
 - **NotifyIcon** - 系統托盤圖示與氣泡通知
-- **Timer** - 多重計時器管理
+- **PerMonitorV2** - 高 DPI 與跨螢幕縮放
+- **Timer + UTC Deadline** - 可校準的提醒與活動倒數
 - **Registry** - 開機自啟動設定
 - **JSON** - 設定檔序列化（使用 Newtonsoft.Json）
-- **Singleton** - 單例模式確保只有一個執行個體
+- **Mutex** - 確保只有一個執行個體
 
 ## 📝 授權
 

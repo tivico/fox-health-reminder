@@ -36,6 +36,8 @@ public partial class MainForm : Form
     private Label? _settingsFeedbackLabel;
     private System.Windows.Forms.Timer? _settingsFeedbackTimer;
     private CheckBox? _reduceMotionCheckBox;
+    private CheckBox? _focusNotificationCheckBox;
+    private Label? _storageLocationLabel;
     private FoxAnimationControl? _headerFox;
     private DateTimePicker? _workdayStartPicker;
     private DateTimePicker? _workdayEndPicker;
@@ -180,9 +182,14 @@ public partial class MainForm : Form
             }
         }
 
-        if (Environment.GetCommandLineArgs().Any(argument =>
-                argument.Equals("--preview-notification", StringComparison.OrdinalIgnoreCase)))
+        var previewNotificationArgument = Environment.GetCommandLineArgs()
+            .FirstOrDefault(argument =>
+                argument.StartsWith("--preview-notification", StringComparison.OrdinalIgnoreCase));
+        if (previewNotificationArgument != null)
         {
+            var manualPreview = previewNotificationArgument.Equals(
+                "--preview-notification=manual",
+                StringComparison.OrdinalIgnoreCase);
             _notificationService.Enqueue(new ReminderPopupRequest(
                 new ReminderItem
                 {
@@ -192,12 +199,15 @@ public partial class MainForm : Form
                     Message = "起身伸展一下，讓肩膀和眼睛都休息一會兒。",
                     Emoji = "🦊",
                     PlaySound = false,
-                    ActionKind = ReminderActionKind.TimedActivity,
+                    ActionKind = manualPreview
+                        ? ReminderActionKind.Manual
+                        : ReminderActionKind.TimedActivity,
                     ActivityDurationSeconds = 8
                 },
                 PreviewNotificationOccurrenceId,
                 SettingsManager.Instance.Settings.SnoozeMinutes,
-                SettingsManager.Instance.Settings.ReduceMotion));
+                SettingsManager.Instance.Settings.ReduceMotion,
+                ShouldFocusNotificationForKeyboard()));
         }
 
         // 首次使用引導
@@ -318,7 +328,8 @@ public partial class MainForm : Form
             item,
             e.OccurrenceId,
             SettingsManager.Instance.Settings.SnoozeMinutes,
-            SettingsManager.Instance.Settings.ReduceMotion));
+            SettingsManager.Instance.Settings.ReduceMotion,
+            ShouldFocusNotificationForKeyboard()));
 
         if (item.ScheduleKind == ReminderScheduleKind.OneTime && _reminderItems != null)
         {
@@ -662,6 +673,11 @@ public partial class MainForm : Form
         {
             _reduceMotionCheckBox.Checked = settings.ReduceMotion;
         }
+        if (_focusNotificationCheckBox != null)
+        {
+            _focusNotificationCheckBox.Checked = settings.FocusNotificationForKeyboard;
+        }
+        UpdateStorageLocationDisplay();
         if (_headerFox != null)
         {
             _headerFox.AnimationEnabled = !settings.ReduceMotion;
@@ -683,6 +699,28 @@ public partial class MainForm : Form
         {
             _workdayEndPicker.Value = DateTime.Today.Add(settings.WorkdayEnd);
         }
+    }
+
+    private static bool ShouldFocusNotificationForKeyboard()
+    {
+        return SettingsManager.Instance.Settings.FocusNotificationForKeyboard
+            || WindowsAccessibility.IsScreenReaderActive;
+    }
+
+    private void UpdateStorageLocationDisplay()
+    {
+        if (_storageLocationLabel == null)
+        {
+            return;
+        }
+
+        var manager = SettingsManager.Instance;
+        var mode = manager.UsesPortableStorage ? "可攜模式" : "AppData";
+        var fallback = manager.StorageNotice == null ? string.Empty : "（已確認改用 AppData）";
+        _storageLocationLabel.Text =
+            $"資料位置：{mode}{fallback}{Environment.NewLine}{manager.StorageFolder}";
+        _storageLocationLabel.AccessibleDescription =
+            $"目前使用{mode}，設定與健康紀錄儲存在 {manager.StorageFolder}";
     }
 
     private void btnSaveSettings_Click(object sender, EventArgs e)
@@ -747,6 +785,8 @@ public partial class MainForm : Form
         settings.StartMinimized = chkStartMinimized.Checked;
         settings.SnoozeMinutes = (int)numSnoozeMinutes.Value;
         settings.ReduceMotion = _reduceMotionCheckBox?.Checked ?? false;
+        settings.FocusNotificationForKeyboard =
+            _focusNotificationCheckBox?.Checked ?? false;
         if (_headerFox != null)
         {
             _headerFox.AnimationEnabled = !settings.ReduceMotion;
@@ -1581,7 +1621,7 @@ public partial class MainForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = false,
-            Height = 720,
+            Height = 788,
             ColumnCount = 1,
             RowCount = 4,
             BackColor = AppTheme.WindowBackground,
@@ -1589,7 +1629,7 @@ public partial class MainForm : Form
             Margin = Padding.Empty
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 420));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
 
@@ -1679,6 +1719,8 @@ public partial class MainForm : Form
             Text = "減少動畫",
             UseVisualStyleBackColor = true
         };
+        _reduceMotionCheckBox.AccessibleName = "減少動畫";
+        _reduceMotionCheckBox.AccessibleDescription = "停用狐狸、倒數、進度條及按鈕的動態補間效果。";
 
         var workdayLabel = new Label
         {
@@ -1719,6 +1761,28 @@ public partial class MainForm : Form
             Text = "（今日成就 100% 的計算基準）"
         };
 
+        _focusNotificationCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Location = new Point(18, 124),
+            Text = "通知出現時取得鍵盤焦點（可直接按 Enter、Esc 或 Alt 快捷鍵）",
+            UseVisualStyleBackColor = true,
+            AccessibleName = "通知出現時取得鍵盤焦點",
+            AccessibleDescription = "啟用後通知會取得焦點，方便使用鍵盤完成、稍後或略過。螢幕閱讀器啟用時會自動套用。"
+        };
+
+        _storageLocationLabel = new Label
+        {
+            AutoSize = false,
+            Location = new Point(18, 150),
+            Size = new Size(640, 40),
+            Font = new Font(AppTheme.FontFamily, 8.5F),
+            ForeColor = AppTheme.SecondaryText,
+            AccessibleName = "資料儲存位置",
+            AccessibleRole = AccessibleRole.StaticText
+        };
+        UpdateStorageLocationDisplay();
+
         generalCard.Controls.AddRange(new Control[]
         {
             chkStartWithWindows,
@@ -1731,7 +1795,9 @@ public partial class MainForm : Form
             _workdayStartPicker,
             workdayTo,
             _workdayEndPicker,
-            workdayHint
+            workdayHint,
+            _focusNotificationCheckBox,
+            _storageLocationLabel
         });
 
         var doNotDisturbCard = new CardPanel

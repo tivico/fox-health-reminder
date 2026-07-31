@@ -548,8 +548,8 @@ partial class MainForm
         // 
         // MainForm
         // 
-        this.AutoScaleDimensions = new SizeF(7F, 15F);
-        this.AutoScaleMode = AutoScaleMode.Font;
+        this.AutoScaleDimensions = new SizeF(96F, 96F);
+        this.AutoScaleMode = AutoScaleMode.Dpi;
         this.ClientSize = new Size(784, 581);
         this.Controls.Add(this.tabControl);
         this.MinimumSize = new Size(720, 560);

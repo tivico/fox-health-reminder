@@ -7,7 +7,7 @@ namespace HealthReminder.Models;
 /// </summary>
 public class AppSettings
 {
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     /// <summary>
     /// 設定結構版本，用於一次性、可追蹤的資料遷移。
@@ -64,6 +64,12 @@ public class AppSettings
     /// 關閉位移與逐格動畫，但保留文字與操作回饋。
     /// </summary>
     public bool ReduceMotion { get; set; }
+
+    /// <summary>
+    /// 通知出現時是否取得焦點，讓使用者能直接以鍵盤完成、稍後或略過。
+    /// 螢幕閱讀器啟用時即使此值為 false 也會自動取得焦點。
+    /// </summary>
+    public bool FocusNotificationForKeyboard { get; set; }
 
     /// <summary>
     /// 工作時段開始（上班）時間，作為「今日成就」目標的起點。

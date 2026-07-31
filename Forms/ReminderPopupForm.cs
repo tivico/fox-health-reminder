@@ -14,11 +14,19 @@ public enum ReminderPopupAction
     TimedOut
 }
 
+internal enum ReminderPopupKeyboardCommand
+{
+    Primary,
+    Snooze,
+    Dismiss
+}
+
 public sealed record ReminderPopupRequest(
     ReminderItem Item,
     string OccurrenceId,
     int SnoozeMinutes,
-    bool ReduceMotion = false);
+    bool ReduceMotion = false,
+    bool FocusForKeyboard = false);
 
 public sealed class ReminderPopupActionEventArgs : EventArgs
 {
@@ -82,6 +90,9 @@ public sealed class ReminderPopupForm : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
         Opacity = 0;
+        KeyPreview = true;
+        AccessibleName = $"{_request.Item.Name}提醒";
+        AccessibleDescription = "可使用 Tab 切換操作，Enter 執行主要操作，Esc 略過提醒。";
 
         BuildContent();
 
@@ -101,7 +112,7 @@ public sealed class ReminderPopupForm : Form
 
     public event EventHandler<ReminderPopupActionEventArgs>? ActionSelected;
 
-    protected override bool ShowWithoutActivation => true;
+    protected override bool ShowWithoutActivation => !_request.FocusForKeyboard;
 
     protected override CreateParams CreateParams
     {
@@ -117,6 +128,20 @@ public sealed class ReminderPopupForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+
+        if (_request.FocusForKeyboard)
+        {
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || _isClosing)
+                {
+                    return;
+                }
+
+                Activate();
+                _primaryButton?.Select();
+            });
+        }
 
         var workArea = _screen.WorkingArea;
         var scale = DeviceDpi / 96f;
@@ -172,7 +197,9 @@ public sealed class ReminderPopupForm : Form
             Size = new Size(262, 28),
             Font = new Font(AppTheme.FontFamily, 12F, FontStyle.Bold),
             ForeColor = AppTheme.PrimaryText,
-            Text = $"{_request.Item.Emoji} {_request.Item.Name}"
+            Text = $"{_request.Item.Emoji} {_request.Item.Name}",
+            AccessibleName = $"提醒：{_request.Item.Name}",
+            AccessibleRole = AccessibleRole.StaticText
         };
         _messageLabel = new Label
         {
@@ -181,7 +208,9 @@ public sealed class ReminderPopupForm : Form
             Size = new Size(260, 50),
             Font = new Font(AppTheme.FontFamily, 9.5F),
             ForeColor = AppTheme.SecondaryText,
-            Text = _request.Item.Message
+            Text = _request.Item.Message,
+            AccessibleName = _request.Item.Message,
+            AccessibleRole = AccessibleRole.StaticText
         };
 
         _activityStatusLabel = new Label
@@ -193,7 +222,9 @@ public sealed class ReminderPopupForm : Form
             ForeColor = AppTheme.Primary,
             Text = _request.Item.ActionKind == ReminderActionKind.TimedActivity
                 ? $"準備好後開始 {_request.Item.ActivityDurationSeconds} 秒活動"
-                : "完成後告訴小狐狸一聲吧"
+                : "完成後告訴小狐狸一聲吧",
+            AccessibleName = "活動狀態",
+            AccessibleRole = AccessibleRole.StaticText
         };
         _activityProgress = new ProgressBar
         {
@@ -202,13 +233,19 @@ public sealed class ReminderPopupForm : Form
             Minimum = 0,
             Maximum = Math.Max(1, _request.Item.ActivityDurationSeconds * 10),
             Style = ProgressBarStyle.Continuous,
-            Visible = _request.Item.ActionKind == ReminderActionKind.TimedActivity
+            Visible = _request.Item.ActionKind == ReminderActionKind.TimedActivity,
+            AccessibleName = "活動進度",
+            AccessibleDescription = "顯示計時活動目前完成的進度。"
         };
 
         _primaryButton = CreateActionButton(
             _request.Item.ActionKind == ReminderActionKind.TimedActivity
-                ? $"開始 {_request.Item.ActivityDurationSeconds} 秒"
-                : "完成",
+                ? $"開始 {_request.Item.ActivityDurationSeconds} 秒 (&S)"
+                : "完成 (&C)",
+            _request.Item.ActionKind == ReminderActionKind.TimedActivity ? "開始活動" : "完成提醒",
+            _request.Item.ActionKind == ReminderActionKind.TimedActivity
+                ? $"開始 {_request.Item.ActivityDurationSeconds} 秒的計時活動。快捷鍵 Alt+S。"
+                : "將這次提醒記錄為完成。快捷鍵 Alt+C。",
             AppTheme.Healthy,
             Color.White,
             (_, _) =>
@@ -224,22 +261,29 @@ public sealed class ReminderPopupForm : Form
             });
         _primaryButton.Location = new Point(24, 178);
         _primaryButton.Size = new Size(116, 40);
+        _primaryButton.TabIndex = 0;
 
         _snoozeButton = CreateActionButton(
-            $"稍後 {_request.SnoozeMinutes} 分",
+            $"稍後 {_request.SnoozeMinutes} 分 (&L)",
+            "稍後提醒",
+            $"將提醒延後 {_request.SnoozeMinutes} 分鐘。快捷鍵 Alt+L。",
             AppTheme.SelectedBackground,
             AppTheme.Primary,
             (_, _) => BeginClose(ReminderPopupAction.Snoozed));
         _snoozeButton.Location = new Point(150, 178);
         _snoozeButton.Size = new Size(130, 40);
+        _snoozeButton.TabIndex = 1;
 
         _dismissButton = CreateActionButton(
-            "略過",
+            "略過 (&K)",
+            "略過提醒",
+            "略過這次提醒。快捷鍵 Alt+K 或 Esc。",
             Color.FromArgb(244, 240, 237),
             AppTheme.SecondaryText,
             (_, _) => BeginClose(ReminderPopupAction.Dismissed));
         _dismissButton.Location = new Point(290, 178);
         _dismissButton.Size = new Size(102, 40);
+        _dismissButton.TabIndex = 2;
 
         Controls.Add(accent);
         Controls.Add(_foxAnimation);
@@ -250,10 +294,14 @@ public sealed class ReminderPopupForm : Form
         Controls.Add(_primaryButton);
         Controls.Add(_snoozeButton);
         Controls.Add(_dismissButton);
+        AcceptButton = _primaryButton;
+        CancelButton = _dismissButton;
     }
 
     private static Button CreateActionButton(
         string text,
+        string accessibleName,
+        string accessibleDescription,
         Color background,
         Color foreground,
         EventHandler onClick)
@@ -266,11 +314,36 @@ public sealed class ReminderPopupForm : Form
             Font = new Font(AppTheme.FontFamily, 9F, FontStyle.Bold),
             Text = text,
             Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            UseVisualStyleBackColor = false,
+            UseMnemonic = true,
+            TabStop = true,
+            AccessibleName = accessibleName,
+            AccessibleDescription = accessibleDescription,
+            AccessibleRole = AccessibleRole.PushButton
         };
-        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.BorderColor = AppTheme.Border;
         button.Click += onClick;
         button.Resize += (_, _) => ApplyRoundedRegion(button, 9);
+        button.GotFocus += (_, _) =>
+        {
+            button.FlatAppearance.BorderSize = 2;
+            button.FlatAppearance.BorderColor = AppTheme.PrimaryText;
+            button.Invalidate();
+        };
+        button.LostFocus += (_, _) =>
+        {
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.BorderColor = AppTheme.Border;
+            button.Invalidate();
+        };
+        button.EnabledChanged += (_, _) =>
+        {
+            button.BackColor = button.Enabled
+                ? background
+                : Color.FromArgb(232, 229, 226);
+            button.ForeColor = button.Enabled ? foreground : SystemColors.GrayText;
+        };
         return button;
     }
 
@@ -298,7 +371,11 @@ public sealed class ReminderPopupForm : Form
         }
         if (_dismissButton != null)
         {
-            _dismissButton.Text = "停止並略過";
+            _dismissButton.Text = "停止並略過 (&K)";
+            if (_request.FocusForKeyboard)
+            {
+                _dismissButton.Select();
+            }
         }
 
         UpdateActivityProgress();
@@ -311,11 +388,7 @@ public sealed class ReminderPopupForm : Form
 
         _autoCloseTimer.Stop();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
-        if (_activityStatusLabel != null)
-        {
-            _activityStatusLabel.Text = "收到！這次任務已記錄完成";
-            _activityStatusLabel.ForeColor = AppTheme.Healthy;
-        }
+        SetActivityStatus("收到！這次任務已記錄完成", AppTheme.Healthy);
         if (_primaryButton != null)
         {
             _primaryButton.Text = "✓ 已完成";
@@ -345,7 +418,8 @@ public sealed class ReminderPopupForm : Form
 
         var elapsedTenths = (int)Math.Round((durationSeconds - remaining.TotalSeconds) * 10);
         _activityProgress.Value = Math.Clamp(elapsedTenths, 0, _activityProgress.Maximum);
-        _activityStatusLabel.Text = $"還有 {Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds))} 秒 · 放鬆眼睛與肩膀";
+        SetActivityStatus(
+            $"還有 {Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds))} 秒 · 放鬆眼睛與肩膀");
     }
 
     private void CompleteActivity()
@@ -359,11 +433,7 @@ public sealed class ReminderPopupForm : Form
         {
             _activityProgress.Value = _activityProgress.Maximum;
         }
-        if (_activityStatusLabel != null)
-        {
-            _activityStatusLabel.Text = "完成！小狐狸替你拍拍手";
-            _activityStatusLabel.ForeColor = AppTheme.Healthy;
-        }
+        SetActivityStatus("完成！小狐狸替你拍拍手", AppTheme.Healthy);
         if (_messageLabel != null)
         {
             _messageLabel.Text = "做得很好，這次活動已經記錄完成。";
@@ -377,6 +447,88 @@ public sealed class ReminderPopupForm : Form
             _dismissButton.Enabled = false;
         }
         _successTimer.Start();
+    }
+
+    private void SetActivityStatus(string text, Color? color = null)
+    {
+        if (_activityStatusLabel == null)
+        {
+            return;
+        }
+
+        var changed = !string.Equals(
+            _activityStatusLabel.Text,
+            text,
+            StringComparison.Ordinal);
+        _activityStatusLabel.Text = text;
+        _activityStatusLabel.AccessibleName = text;
+        if (color.HasValue)
+        {
+            _activityStatusLabel.ForeColor = color.Value;
+        }
+
+        if (changed)
+        {
+            AccessibleName = $"{_request.Item.Name}提醒：{text}";
+            AccessibilityNotifyClients(AccessibleEvents.NameChange, -1);
+        }
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (!_isClosing)
+        {
+            var command = GetKeyboardCommand(keyData, _request.Item.ActionKind);
+            if (command == ReminderPopupKeyboardCommand.Primary
+                && _primaryButton?.Enabled == true)
+            {
+                _primaryButton.PerformClick();
+                return true;
+            }
+            if (command == ReminderPopupKeyboardCommand.Snooze
+                && _snoozeButton?.Enabled == true)
+            {
+                _snoozeButton.PerformClick();
+                return true;
+            }
+            if (command == ReminderPopupKeyboardCommand.Dismiss
+                && _dismissButton?.Enabled == true)
+            {
+                _dismissButton.PerformClick();
+                return true;
+            }
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    internal static ReminderPopupKeyboardCommand? GetKeyboardCommand(
+        Keys keyData,
+        ReminderActionKind actionKind)
+    {
+        if (keyData == (Keys.Alt | Keys.S)
+            && actionKind == ReminderActionKind.TimedActivity)
+        {
+            return ReminderPopupKeyboardCommand.Primary;
+        }
+
+        if (keyData == (Keys.Alt | Keys.C)
+            && actionKind == ReminderActionKind.Manual)
+        {
+            return ReminderPopupKeyboardCommand.Primary;
+        }
+
+        if (keyData == (Keys.Alt | Keys.L))
+        {
+            return ReminderPopupKeyboardCommand.Snooze;
+        }
+
+        if (keyData == (Keys.Alt | Keys.K) || keyData == Keys.Escape)
+        {
+            return ReminderPopupKeyboardCommand.Dismiss;
+        }
+
+        return null;
     }
 
     private void BeginAnimation()

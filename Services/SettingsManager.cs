@@ -9,19 +9,18 @@ namespace HealthReminder.Services;
 /// </summary>
 public class SettingsManager
 {
-    private static readonly string SettingsFolder = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "HealthReminder");
-    
-    private static readonly string SettingsPath = Path.Combine(SettingsFolder, "settings.json");
-    private static readonly string StatisticsPath = Path.Combine(SettingsFolder, "statistics.json");
-
     private static SettingsManager? _instance;
     private static readonly object _lock = new object();
+    private static StorageLocationSelection? _configuredStorage;
+    private readonly string _settingsPath;
+    private readonly string _statisticsPath;
 
     public AppSettings Settings { get; private set; } = new AppSettings();
     public List<DailyStatistics> Statistics { get; private set; } = new List<DailyStatistics>();
     public string? LastError { get; private set; }
+    public string StorageFolder { get; }
+    public bool UsesPortableStorage { get; }
+    public string? StorageNotice { get; }
 
     /// <summary>
     /// 單例模式取得實例
@@ -41,8 +40,35 @@ public class SettingsManager
         }
     }
 
+    internal static void ConfigureStorage(StorageLocationSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+
+        lock (_lock)
+        {
+            if (_instance != null)
+            {
+                throw new InvalidOperationException("設定管理服務初始化後不可再變更資料位置。");
+            }
+
+            _configuredStorage = selection with { Folder = Path.GetFullPath(selection.Folder) };
+        }
+    }
+
     private SettingsManager()
     {
+        var storage = _configuredStorage ?? new StorageLocationSelection(
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "HealthReminder"),
+            false);
+
+        StorageFolder = storage.Folder;
+        UsesPortableStorage = storage.IsPortable;
+        StorageNotice = storage.Notice;
+        _settingsPath = Path.Combine(StorageFolder, "settings.json");
+        _statisticsPath = Path.Combine(StorageFolder, "statistics.json");
+
         EnsureDirectoryExists();
         Load();
     }
@@ -52,9 +78,9 @@ public class SettingsManager
     /// </summary>
     private void EnsureDirectoryExists()
     {
-        if (!Directory.Exists(SettingsFolder))
+        if (!Directory.Exists(StorageFolder))
         {
-            Directory.CreateDirectory(SettingsFolder);
+            Directory.CreateDirectory(StorageFolder);
         }
     }
 
@@ -68,9 +94,9 @@ public class SettingsManager
         try
         {
             // 載入應用程式設定
-            if (File.Exists(SettingsPath))
+            if (File.Exists(_settingsPath))
             {
-                var json = File.ReadAllText(SettingsPath);
+                var json = File.ReadAllText(_settingsPath);
                 var storedSchemaVersion = JObject.Parse(json).Value<int?>(nameof(AppSettings.SchemaVersion)) ?? 1;
                 Settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
                 settingsChanged = MigrateSettings(storedSchemaVersion);
@@ -81,9 +107,9 @@ public class SettingsManager
             }
 
             // 載入統計資料
-            if (File.Exists(StatisticsPath))
+            if (File.Exists(_statisticsPath))
             {
-                var json = File.ReadAllText(StatisticsPath);
+                var json = File.ReadAllText(_statisticsPath);
                 Statistics = JsonConvert.DeserializeObject<List<DailyStatistics>>(json) ?? new List<DailyStatistics>();
             }
 
@@ -170,11 +196,11 @@ public class SettingsManager
 
             // 儲存應用程式設定
             var settingsJson = JsonConvert.SerializeObject(Settings, Formatting.Indented);
-            WriteAllTextAtomically(SettingsPath, settingsJson);
+            WriteAllTextAtomically(_settingsPath, settingsJson);
 
             // 儲存統計資料
             var statsJson = JsonConvert.SerializeObject(Statistics, Formatting.Indented);
-            WriteAllTextAtomically(StatisticsPath, statsJson);
+            WriteAllTextAtomically(_statisticsPath, statsJson);
             return true;
         }
         catch (Exception ex)

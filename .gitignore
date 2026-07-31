@@ -21,6 +21,9 @@ Data/
 portable.flag
 *.log
 
+# Source artwork kept locally after final sprites are embedded
+暫存/
+
 # OS files
 Thumbs.db
 Desktop.ini

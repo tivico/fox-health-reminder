@@ -159,7 +159,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 ```
 
 - 寫入使用暫存檔後原子取代，降低中途損壞風險。
-- `AppSettings.SchemaVersion` 目前為 4。
+- `AppSettings.SchemaVersion` 目前為 5。
 - 舊設定首次載入時會補齊新欄位。
 - JSON 載入會取代預設提醒清單，不會將預設值再次追加；舊資料中設定完全相同的重複提醒會自動合併。
 - 舊護眼提醒會遷移為 20 秒、手動開始的計時活動。
@@ -182,9 +182,12 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 - 統計頁「今日提醒明細」由原生 `ListView` 改為 `StatRowCard` 卡片列，附完成率小進度條與高亮總計列，預設三個提醒時不需捲動。
 - 主視窗標題的靜態狐狸 Emoji 換成 `FoxAnimationControl`，並改用 high-quality bicubic 縮放。
 - 按鈕滑鼠停留改用 `HoverGlow` 平滑過渡背景色。
-- 「減少動畫」已接上狐狸動畫與大字倒數；`RoundedProgressBar` 與 `HoverGlow` 已具備開關參數，`MainForm` 尚未全部傳入。
+- 「減少動畫」已同步接上狐狸動畫、大字倒數、`RoundedProgressBar` 與 `HoverGlow`。
+- 通知按鈕具備明確 Focus／Disabled 視覺、AccessibleName／Description、Tab 順序、Enter／Esc，以及 Alt+S／C／L／K 快捷鍵。
+- 一般設定新增「通知出現時取得鍵盤焦點」；Windows 螢幕閱讀器啟用時會自動取得焦點。
+- 專案設定為 `ApplicationHighDpiMode=PerMonitorV2`，主視窗與通知使用 DPI AutoScale。
 
-已完成 920×640 實際畫面檢查。待補項目包括 125%、150%、200% DPI 實機驗證，以及完整鍵盤 Focus 視覺檢查。
+已完成 920×640 實際畫面檢查。通知鍵盤與 Focus／Disabled 程式收尾已完成；125%、150%、200% DPI、多螢幕及 Narrator 仍需依 `Verification/RELEASE_CHECKLIST.md` 在對應設備人工驗收。
 
 ## 9. 驗證現況
 
@@ -192,7 +195,7 @@ RollIn → Wave → Talk → Wait → Celebrate → RollOut
 
 ```text
 Release build: 0 warnings, 0 errors
-Verification: 20/20 passed
+Verification: 24/24 passed
 Published EXE smoke test: passed
 ```
 
@@ -212,6 +215,10 @@ Published EXE smoke test: passed
 - 一次性稍後重新啟用。
 - 暫停保留剩餘時間。
 - 多種暫停原因互不覆蓋。
+- 通知 Alt+S／C／L／K 與 Esc 對應正確操作。
+- 沒有 `portable.flag` 時使用 AppData。
+- 可攜模式會先實際測試 `Data` 寫入權限並清除測試檔。
+- `Data` 無法建立時回報明確 failure，交由 UI 決定 fallback 或結束。
 
 ## 10. 建置與發布
 
@@ -257,7 +264,7 @@ artifacts\publish\win-x64-single-file\HealthReminder.exe
 .\build-release.ps1
 ```
 
-腳本會依序執行 Release 建置、20 項 Verification、self-contained 單檔發布與安裝包編譯，並驗證正式發布目錄只包含單一 `HealthReminder.exe`。
+腳本會依序執行 Release 建置、24 項 Verification、self-contained 單檔發布、安裝包編譯與發布成品驗證，並驗證正式發布目錄只包含單一 `HealthReminder.exe`。
 
 正式分享成品：
 
@@ -265,7 +272,11 @@ artifacts\publish\win-x64-single-file\HealthReminder.exe
 artifacts\installer\狐狸健康提醒安裝程式.exe
 ```
 
-安裝包約 67.8 MiB，使用繁體中文介面，安裝至 `%LOCALAPPDATA%\Programs\HealthReminder`，不要求系統管理員權限，並建立開始功能表與預設勾選的桌面捷徑。解除安裝會清除程式與開機自啟登錄值，但保留 `%APPDATA%\HealthReminder` 的設定及健康紀錄。
+安裝包使用繁體中文介面，安裝至 `%LOCALAPPDATA%\Programs\HealthReminder`，不要求系統管理員權限，並建立開始功能表與預設勾選的桌面捷徑。解除安裝會清除程式與開機自啟登錄值，但保留 `%APPDATA%\HealthReminder` 的設定及健康紀錄。`使用說明.txt` 同時放在分享資料夾、安裝目錄與開始功能表。
+
+`Verification/verify-release.ps1` 會額外驗證中文／空白路徑、self-contained 啟動煙霧測試、portable 可寫與不可寫情境、SHA256、版本與簽章狀態，並輸出 `artifacts/verification/release-verification.txt`。
+
+2026-07-31 已在目前 Windows 主機完成一次靜默安裝生命週期實測：程式、親友說明、桌面捷徑、開始功能表捷徑與安裝後 `--smoke-test` 均通過；解除安裝後程式資料夾、捷徑與解除安裝登錄項皆已清除。乾淨 Windows 10／11 無 Runtime 仍需外部設備或啟用 Windows Sandbox 後驗收。
 
 ### 自用機器的部署位置與開機自啟
 
@@ -321,14 +332,14 @@ Git 應追蹤：
 
 **功能與體驗**
 
-3. 實測 Windows 125%、150%、200% DPI 與多螢幕。
-4. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
-5. 加入 7 日、30 日趨勢圖。
-6. 支援每日指定時間、每週指定星期等進階排程。
-7. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
-8. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
-9. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
-10. 視親友實際安裝回饋補充圖文快速使用說明。
+3. 在乾淨 Windows 10／11（無 .NET Runtime）完成安裝、提醒、解除安裝與重裝實測。
+4. 實測 Windows 125%、150%、200% DPI、不同縮放比例的多螢幕與 Narrator 朗讀。
+5. 決定是否購買程式碼簽章；目前親友測試版維持未簽章並提供 SmartScreen 說明及 SHA256。
+6. 加入 7 日、30 日趨勢圖。
+7. 支援每日指定時間、每週指定星期等進階排程。
+8. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
+9. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
+10. 視親友實際安裝回饋補充圖文版快速使用說明。
 11. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
 
 更細的階段工作與驗收清單請參考 `REFACTORING_PLAN.md`。
