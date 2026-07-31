@@ -262,7 +262,7 @@ artifacts\publish\win-x64-single-file\HealthReminder.exe
 正式分享成品：
 
 ```text
-artifacts\installer\狐狸健康提醒-安裝程式-1.0.0.0.exe
+artifacts\installer\狐狸健康提醒安裝程式.exe
 ```
 
 安裝包約 67.8 MiB，使用繁體中文介面，安裝至 `%LOCALAPPDATA%\Programs\HealthReminder`，不要求系統管理員權限，並建立開始功能表與預設勾選的桌面捷徑。解除安裝會清除程式與開機自啟登錄值，但保留 `%APPDATA%\HealthReminder` 的設定及健康紀錄。
