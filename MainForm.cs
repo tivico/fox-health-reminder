@@ -17,6 +17,7 @@ namespace HealthReminder;
 public partial class MainForm : Form
 {
     private const string PreviewNotificationOccurrenceId = "__preview_notification__";
+    private const bool ShowDeveloperAnimationPreview = false;
     private ReminderService _reminderService;
     private readonly WindowsSystemEventMonitor _systemEventMonitor;
     private readonly NotificationService _notificationService;
@@ -1273,7 +1274,8 @@ public partial class MainForm : Form
             Size = new Size(104, 34),
             Text = "動畫預覽",
             Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            UseVisualStyleBackColor = false,
+            Visible = ShowDeveloperAnimationPreview
         };
         animationPreviewButton.FlatAppearance.BorderSize = 0;
         animationPreviewButton.Click += (_, _) =>
