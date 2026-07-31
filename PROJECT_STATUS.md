@@ -239,7 +239,7 @@ dotnet publish .\HealthReminder.csproj -c Release -p:PublishProfile=PortableSing
 artifacts\publish\win-x64-single-file\HealthReminder.exe
 ```
 
-目前約 69.3 MiB，設定如下：
+目前約 72.7 MiB，設定如下：
 
 - `RuntimeIdentifier=win-x64`
 - `SelfContained=true`
@@ -248,6 +248,24 @@ artifacts\publish\win-x64-single-file\HealthReminder.exe
 - `PublishTrimmed=false`
 
 暫不啟用 trimming，避免 WinForms、Newtonsoft.Json 或反射路徑被錯誤裁剪。
+
+### 親友安裝包
+
+親友版採 Inno Setup 的每位使用者安裝模式。開發者安裝 Inno Setup 後，在專案根目錄執行：
+
+```powershell
+.\build-release.ps1
+```
+
+腳本會依序執行 Release 建置、20 項 Verification、self-contained 單檔發布與安裝包編譯，並驗證正式發布目錄只包含單一 `HealthReminder.exe`。
+
+正式分享成品：
+
+```text
+artifacts\installer\狐狸健康提醒-安裝程式-1.0.0.0.exe
+```
+
+安裝包約 67.8 MiB，使用繁體中文介面，安裝至 `%LOCALAPPDATA%\Programs\HealthReminder`，不要求系統管理員權限，並建立開始功能表與預設勾選的桌面捷徑。解除安裝會清除程式與開機自啟登錄值，但保留 `%APPDATA%\HealthReminder` 的設定及健康紀錄。
 
 ### 自用機器的部署位置與開機自啟
 
@@ -265,7 +283,7 @@ dotnet publish .\HealthReminder.csproj -c Release -p:PublishProfile=PortableSing
 Copy-Item .\artifacts\publish\win-x64-single-file\HealthReminder.exe "$env:LOCALAPPDATA\HealthReminder\HealthReminder.exe" -Force
 ```
 
-分享給親友時仍只需要交付 `artifacts` 內的單一 EXE，對方放在任何位置皆可執行。
+分享給親友時優先交付 `artifacts\installer` 內的安裝程式；`artifacts\publish` 內的單一 EXE 保留作為免安裝備用版。
 
 ## 11. 專案檔案政策
 
@@ -285,7 +303,7 @@ Git 應追蹤：
 - 舊式多 DLL self-contained 發布資料夾。
 - `*.csproj.user` 與 `*.pubxml.user`。
 
-`artifacts` 原則上只保留目前正式分享用的單一 EXE；其他驗證輸出完成後即可清除。
+`artifacts` 原則上只保留目前正式分享用的安裝程式與免安裝單一 EXE；其他驗證輸出完成後即可清除。
 
 ## 12. 已知限制與下一步
 
@@ -297,25 +315,21 @@ Git 應追蹤：
 
 1. 呼吸與尾巴擺動暫緩；等能取得真正保持母圖一致的連續影格後，再加入待機動畫，避免為了湊四格產生晃動。
 
-**維運**
-
-2. 建立 `deploy.ps1`，一次完成「發佈單檔 → 覆蓋 `%LOCALAPPDATA%`」，避免改完程式忘記同步開機執行的版本。
-
 **收尾與一致性**
 
-3. 提醒項目較多時，統計與提醒清單仍會出現原生捲軸，可評估自繪捲軸。
+2. 提醒項目較多時，統計與提醒清單仍會出現原生捲軸，可評估自繪捲軸。
 
 **功能與體驗**
 
-4. 實測 Windows 125%、150%、200% DPI 與多螢幕。
-5. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
-6. 加入 7 日、30 日趨勢圖。
-7. 支援每日指定時間、每週指定星期等進階排程。
-8. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
-9. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
-10. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
-11. 建立親友分享用 README／快速使用說明。
-12. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
+3. 實測 Windows 125%、150%、200% DPI 與多螢幕。
+4. 補完整鍵盤導覽、Focused／Disabled 狀態與螢幕閱讀器標籤。
+5. 加入 7 日、30 日趨勢圖。
+6. 支援每日指定時間、每週指定星期等進階排程。
+7. 讓狐狸對事件反應，例如完成提醒時揮手、今日達標時跳躍慶祝。
+8. 依提醒類型顯示對應姿勢的狐狸；原始 24 姿勢圖中已有「記得喝水喔」與「起來走走顧眼睛」牌子等素材可用。
+9. 完成 portable.flag 寫入權限檢查與 AppData fallback 提示。
+10. 視親友實際安裝回饋補充圖文快速使用說明。
+11. 若未來整個應用程式需要大量向量動畫與頁面轉場，再評估完整遷移 WPF；目前不採 WinForms／WPF 混合 UI。
 
 更細的階段工作與驗收清單請參考 `REFACTORING_PLAN.md`。
 

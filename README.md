@@ -19,11 +19,20 @@
 ## 📋 系統需求
 
 - Windows 10 / 11
-- .NET 8.0 Runtime ([下載連結](https://dotnet.microsoft.com/download/dotnet/8.0))
+- 64 位元 Windows
+- 使用正式安裝包或單檔版時，不需另外安裝 .NET Runtime
 
 ## 🔧 安裝與執行
 
-### 方法一：從原始碼編譯
+### 親友使用：安裝包
+
+1. 雙擊 `狐狸健康提醒-安裝程式-版本號.exe`。
+2. 保持勾選「建立桌面捷徑」，按下一步完成安裝。
+3. 安裝完成後可立即啟動；之後從桌面或開始功能表開啟「小狐狸健康助手」。
+
+安裝程式預設安裝到目前 Windows 使用者的 LocalAppData，不需要系統管理員權限。桌面與開始功能表捷徑會直接顯示主視窗；只有開機自動啟動時才會安靜縮到系統匣。解除安裝不會刪除 `%APPDATA%\HealthReminder` 內的設定與健康紀錄，重新安裝或升級後可繼續使用。
+
+### 開發者：從原始碼編譯
 
 1. 確保已安裝 [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
@@ -40,10 +49,24 @@
    bin/Release/net8.0-windows/HealthReminder.exe
    ```
 
-### 方法二：使用 Visual Studio
+### 開發者：使用 Visual Studio
 
 1. 用 Visual Studio 2022 開啟 `HealthReminder.sln`
 2. 按 F5 執行，或 Ctrl+Shift+B 編譯
+
+### 建立正式安裝包
+
+先安裝 [Inno Setup](https://jrsoftware.org/isdl.php)，再於專案根目錄執行：
+
+```powershell
+.\build-release.ps1
+```
+
+腳本會依序執行 Release 建置、Verification、self-contained 單檔發布與安裝包編譯。成品位於：
+
+```text
+artifacts\installer\狐狸健康提醒-安裝程式-版本號.exe
+```
 
 ## 📖 使用說明
 
