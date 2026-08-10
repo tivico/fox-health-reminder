@@ -1396,7 +1396,7 @@ public partial class MainForm : Form
             Size = new Size(136, 28),
             Font = new Font(AppTheme.FontFamily, 8F),
             ForeColor = AppTheme.SecondaryText,
-            Text = "版本 1.0.0",
+            Text = "版本 1.0.1",
             TextAlign = ContentAlignment.MiddleLeft
         };
         sidebar.Resize += (_, _) => versionLabel.Top = sidebar.ClientSize.Height - 42;

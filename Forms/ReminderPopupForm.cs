@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Media;
 using HealthReminder.Controls;
 using HealthReminder.Models;
 using HealthReminder.UI;
@@ -428,6 +429,7 @@ public sealed class ReminderPopupForm : Form
 
         _activityStarted = false;
         _activityTimer.Stop();
+        PlayCompletionSound();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
         if (_activityProgress != null)
         {
@@ -447,6 +449,24 @@ public sealed class ReminderPopupForm : Form
             _dismissButton.Enabled = false;
         }
         _successTimer.Start();
+    }
+
+    private void PlayCompletionSound()
+    {
+        if (!_request.Item.PlaySound)
+        {
+            return;
+        }
+
+        try
+        {
+            // 使用 Windows 內建音效，不需額外攜帶或授權音檔。
+            SystemSounds.Exclamation.Play();
+        }
+        catch
+        {
+            // 音效不可用時仍要正常完成並記錄活動。
+        }
     }
 
     private void SetActivityStatus(string text, Color? color = null)
