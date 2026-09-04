@@ -287,12 +287,17 @@ artifacts\installer\狐狸健康提醒安裝程式.exe
 - 自用的正式單檔固定放在 `%LOCALAPPDATA%\HealthReminder\HealthReminder.exe`，不隨專案資料夾清理而消失。
 - `SettingsManager.SyncStartWithWindowsPath()` 在 `MainForm` 載入時執行，把登錄值改寫為目前實際執行檔路徑；若設定已關閉則清除殘留登錄值，讓設定與登錄兩邊一致。
 
-因此改完程式碼後要讓開機執行的版本跟著更新，需重新發佈並覆蓋該位置：
+因此改完程式碼後要讓開機執行的版本跟著更新，直接執行 `deploy.ps1`：
 
 ```powershell
-dotnet publish .\HealthReminder.csproj -c Release -p:PublishProfile=PortableSingleFile
-Copy-Item .\artifacts\publish\win-x64-single-file\HealthReminder.exe "$env:LOCALAPPDATA\HealthReminder\HealthReminder.exe" -Force
+.\deploy.ps1
 ```
+
+流程為驗證 → 發佈單檔 → 停掉執行中的舊版 → 覆蓋 → 重新啟動，並以 SHA256 確認覆蓋結果與發佈成品一致。因為執行中的程式會鎖住 EXE，腳本會先結束行程並等待檔案鎖釋放後才覆蓋，避免直接複製時失敗。重新啟動時從正式位置啟動，`SyncStartWithWindowsPath()` 會順帶把開機自啟登錄項校正到該路徑。
+
+可用參數：`-SkipVerification` 略過測試，`-NoRestart` 只更新檔案不重新啟動。
+
+`deploy.ps1` 只處理自己這台機器；要產生給親友的安裝包仍使用 `build-release.ps1`。
 
 分享給親友時優先交付 `artifacts\installer` 內的安裝程式；`artifacts\publish` 內的單一 EXE 保留作為免安裝備用版。
 
