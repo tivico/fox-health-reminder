@@ -166,7 +166,7 @@ HealthReminder/
 
 ## 📝 授權
 
-MIT License
+本專案採用 MIT License，完整條款見 [LICENSE](LICENSE)。
 
 ## 🤝 貢獻
 
