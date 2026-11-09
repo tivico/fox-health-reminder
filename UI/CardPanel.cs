@@ -11,6 +11,7 @@ public sealed class CardPanel : Panel
     {
         BackColor = AppTheme.CardBackground;
         DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Padding = new Padding(16);
         Resize += (_, _) => UpdateRegion();
     }

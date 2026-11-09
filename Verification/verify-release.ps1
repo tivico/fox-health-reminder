@@ -143,26 +143,24 @@ New-Item -ItemType Directory -Path $verificationRoot -Force | Out-Null
 Clear-VerificationPath -Path $pathTestRoot
 
 try {
-    $writablePortableRoot = Join-Path $pathTestRoot '含 中文與空白 可寫'
-    New-Item -ItemType Directory -Path $writablePortableRoot -Force | Out-Null
-    $pathTestExe = Join-Path $writablePortableRoot '小狐狸 健康提醒.exe'
+    $portableTestRoot = Join-Path $pathTestRoot '含 中文與空白'
+    New-Item -ItemType Directory -Path $portableTestRoot -Force | Out-Null
+    $pathTestExe = Join-Path $portableTestRoot '小狐狸 健康提醒.exe'
+    $portableDataPath = Join-Path $portableTestRoot 'Data'
     Copy-Item -LiteralPath $publishedExe -Destination $pathTestExe
 
     Invoke-SmokeTest -Executable $pathTestExe -ExpectedExitCode 0
 
-    New-Item -ItemType File -Path (Join-Path $writablePortableRoot 'portable.flag') -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $portableTestRoot 'portable.flag') -Force | Out-Null
     Invoke-SmokeTest -Executable $pathTestExe -ExpectedExitCode 0
     Assert-Condition `
-        (Test-Path -LiteralPath (Join-Path $writablePortableRoot 'Data') -PathType Container) `
+        (Test-Path -LiteralPath $portableDataPath -PathType Container) `
         'portable.flag 未建立可寫的 Data 資料夾。'
 
-    $blockedPortableRoot = Join-Path $pathTestRoot '含 中文與空白 不可寫'
-    New-Item -ItemType Directory -Path $blockedPortableRoot -Force | Out-Null
-    $blockedTestExe = Join-Path $blockedPortableRoot '小狐狸 健康提醒.exe'
-    Copy-Item -LiteralPath $publishedExe -Destination $blockedTestExe
-    New-Item -ItemType File -Path (Join-Path $blockedPortableRoot 'portable.flag') -Force | Out-Null
-    New-Item -ItemType File -Path (Join-Path $blockedPortableRoot 'Data') -Force | Out-Null
-    Invoke-SmokeTest -Executable $blockedTestExe -ExpectedExitCode 4
+    # 沿用同一份 EXE，只把測試用的空目錄換成檔案，重現無法建立 Data 的情況。
+    [IO.Directory]::Delete($portableDataPath)
+    New-Item -ItemType File -Path $portableDataPath | Out-Null
+    Invoke-SmokeTest -Executable $pathTestExe -ExpectedExitCode 4
 }
 finally {
     Clear-VerificationPath -Path $pathTestRoot

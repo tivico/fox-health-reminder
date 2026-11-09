@@ -21,6 +21,7 @@ public sealed class ReminderCountdownCard : UserControl
     {
         BackColor = Color.FromArgb(255, 251, 248);
         DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Height = 64;
         Margin = new Padding(0, 0, 0, 8);
 
@@ -41,7 +42,21 @@ public sealed class ReminderCountdownCard : UserControl
             _remainingLabel,
             _nextTimeLabel
         });
-        Resize += (_, _) => _nextTimeLabel.Left = ClientSize.Width - _nextTimeLabel.Width - 16;
+        void ArrangeContent()
+        {
+            var scale = DeviceDpi / 96f;
+            int Px(int value) => (int)Math.Round(value * scale);
+            var rightWidth = Px(150);
+            var right = ClientSize.Width - rightWidth - Px(14);
+            _remainingLabel.SetBounds(right, Px(8), rightWidth, Px(24));
+            _remainingLabel.TextAlign = ContentAlignment.MiddleRight;
+            _nextTimeLabel.SetBounds(right, Px(34), rightWidth, Px(20));
+            _nameLabel.Width = Math.Max(Px(40), right - _nameLabel.Left - Px(12));
+            _intervalLabel.Width = _nameLabel.Width;
+        }
+        Resize += (_, _) => ArrangeContent();
+        DpiChangedAfterParent += (_, _) => ArrangeContent();
+        ArrangeContent();
     }
 
     public string ReminderId { get; private set; } = string.Empty;
@@ -100,7 +115,7 @@ public sealed class ReminderCountdownCard : UserControl
         e.Graphics.DrawPath(pen, path);
     }
 
-    private static string FormatRemaining(TimeSpan remaining)
+    internal static string FormatRemaining(TimeSpan remaining)
     {
         return remaining.TotalHours >= 1
             ? $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"

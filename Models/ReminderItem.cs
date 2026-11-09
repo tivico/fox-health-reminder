@@ -99,6 +99,8 @@ public class ReminderItem
     /// </summary>
     public string Emoji { get; set; } = "💡";
 
+    internal ReminderItem Copy() => (ReminderItem)MemberwiseClone();
+
     /// <summary>
     /// 取得預設的提醒項目清單
     /// </summary>

@@ -9,192 +9,115 @@ public enum ReminderPauseReason
     Temporary
 }
 
-/// <summary>
-/// 單一提醒項目的計時器包裝
-/// </summary>
-public class ReminderTimer : IDisposable
+/// <summary>單一提醒的期限與暫停狀態，由 ReminderService 統一巡檢。</summary>
+public sealed class ReminderTimer
 {
-    private readonly System.Windows.Forms.Timer _timer;
-    private DateTimeOffset _nextTriggerUtc;
-    private TimeSpan _remainingWhenPaused = TimeSpan.Zero;
+    private readonly TimeProvider _clock;
     private readonly HashSet<ReminderPauseReason> _pauseReasons = new();
-    
+    private DateTimeOffset _nextTriggerUtc;
+    private TimeSpan _remainingWhenPaused;
+    private TimeSpan _maximumIntervalRemaining;
+
     public ReminderItem Item { get; private set; }
     public bool IsPaused => _pauseReasons.Count > 0;
-    
-    /// <summary>
-    /// 下次觸發時間
-    /// </summary>
-    public DateTime NextTriggerTime => _nextTriggerUtc.LocalDateTime;
-    
-    /// <summary>
-    /// 剩餘時間
-    /// </summary>
-    public TimeSpan RemainingTime => IsPaused
-        ? _remainingWhenPaused
-        : _nextTriggerUtc > DateTimeOffset.UtcNow
-            ? _nextTriggerUtc - DateTimeOffset.UtcNow
-            : TimeSpan.Zero;
+    public DateTime NextTriggerTime => TimeZoneInfo.ConvertTime(_nextTriggerUtc, _clock.LocalTimeZone).DateTime;
+    public TimeSpan RemainingTime => IsPaused ? _remainingWhenPaused
+        : MaxZero(_nextTriggerUtc - _clock.GetUtcNow());
 
-    /// <summary>
-    /// 提醒觸發事件
-    /// </summary>
-    public event EventHandler<ReminderItem>? OnTriggered;
-
-    public ReminderTimer(ReminderItem item)
+    public ReminderTimer(ReminderItem item, TimeProvider? clock = null)
     {
-        Item = item;
-        _timer = new System.Windows.Forms.Timer();
-        _timer.Interval = 1000; // 每秒檢查一次
-        _timer.Tick += Timer_Tick;
-        
+        _clock = clock ?? TimeProvider.System;
+        Item = item.Copy();
         ResetTimer();
     }
 
-    private void Timer_Tick(object? sender, EventArgs e)
+    internal void ResetTimer()
     {
-        if (IsPaused || !Item.IsEnabled) return;
-
-        if (DateTimeOffset.UtcNow >= _nextTriggerUtc)
-        {
-            OnTriggered?.Invoke(this, Item);
-            if (Item.ScheduleKind == ReminderScheduleKind.OneTime)
-            {
-                _timer.Stop();
-            }
-            else
-            {
-                ResetTimer();
-            }
-        }
-    }
-
-    /// <summary>
-    /// 重設計時器到下次觸發時間
-    /// </summary>
-    public void ResetTimer()
-    {
+        _maximumIntervalRemaining = TimeSpan.FromMinutes(Item.IntervalMinutes);
         _nextTriggerUtc = Item.ScheduleKind == ReminderScheduleKind.OneTime
-            ? ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now.AddMinutes(Item.IntervalMinutes))
-            : DateTimeOffset.UtcNow.AddMinutes(Item.IntervalMinutes);
+            ? GetOneTimeDeadline()
+            : _clock.GetUtcNow().Add(_maximumIntervalRemaining);
+        _remainingWhenPaused = MaxZero(_nextTriggerUtc - _clock.GetUtcNow());
     }
 
-    /// <summary>
-    /// 稍後提醒（Snooze）
-    /// </summary>
+    internal bool UpdateItem(ReminderItem item)
+    {
+        var changed = Item.IsEnabled != item.IsEnabled || Item.ScheduleKind != item.ScheduleKind
+            || (item.ScheduleKind == ReminderScheduleKind.OneTime
+                ? Item.OneTimeAtLocal != item.OneTimeAtLocal
+                : Item.IntervalMinutes != item.IntervalMinutes);
+        Item = item.Copy();
+        if (changed) ResetTimer();
+        return changed;
+    }
+
     public void Snooze(int minutes)
     {
-        _nextTriggerUtc = DateTimeOffset.UtcNow.AddMinutes(minutes);
+        _nextTriggerUtc = _clock.GetUtcNow().AddMinutes(minutes);
+        _remainingWhenPaused = TimeSpan.FromMinutes(minutes);
+        _maximumIntervalRemaining = _remainingWhenPaused;
         Item.IsEnabled = true;
-        _timer.Start();
     }
 
-    /// <summary>
-    /// 開始計時
-    /// </summary>
+    internal void RetryPresentation()
+    {
+        _nextTriggerUtc = _clock.GetUtcNow().AddMinutes(1);
+        _remainingWhenPaused = TimeSpan.FromMinutes(1);
+    }
+
     public void Start()
     {
-        ResetTimer();
-        _timer.Start();
         _pauseReasons.Clear();
+        ResetTimer();
     }
 
-    /// <summary>
-    /// 暫停計時
-    /// </summary>
     public void Pause(ReminderPauseReason reason = ReminderPauseReason.User)
     {
-        if (_pauseReasons.Contains(reason)) return;
-
-        if (!IsPaused)
-        {
-            _remainingWhenPaused = RemainingTime;
-        }
-
+        if (!IsPaused) _remainingWhenPaused = RemainingTime;
         _pauseReasons.Add(reason);
     }
 
-    /// <summary>
-    /// 恢復計時
-    /// </summary>
     public void Resume(ReminderPauseReason reason = ReminderPauseReason.User)
     {
-        if (!_pauseReasons.Remove(reason)) return;
-        if (IsPaused) return;
-
+        if (!_pauseReasons.Remove(reason) || IsPaused) return;
         _nextTriggerUtc = Item.ScheduleKind == ReminderScheduleKind.OneTime
-            ? ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now)
-            : DateTimeOffset.UtcNow.Add(_remainingWhenPaused);
+            ? GetOneTimeDeadline()
+            : _clock.GetUtcNow().Add(_remainingWhenPaused);
     }
 
-    /// <summary>
-    /// 系統喚醒或時鐘變更後重新檢查期限。
-    /// 過期提醒保留為立即到期；異常遠的未來期限則限制為一個完整週期。
-    /// </summary>
-    public void RecalibrateAfterSystemChange()
+    internal void RecalibrateAfterSystemChange()
     {
         if (IsPaused) return;
-
-        var now = DateTimeOffset.UtcNow;
         if (Item.ScheduleKind == ReminderScheduleKind.OneTime)
         {
-            _nextTriggerUtc = ConvertLocalToUtc(Item.OneTimeAtLocal ?? DateTime.Now);
-            return;
+            _nextTriggerUtc = GetOneTimeDeadline();
         }
-
-        var maximumRemaining = TimeSpan.FromMinutes(Math.Max(1, Item.IntervalMinutes));
-        if (_nextTriggerUtc - now > maximumRemaining)
+        else if (RemainingTime > _maximumIntervalRemaining)
         {
-            _nextTriggerUtc = now.Add(maximumRemaining);
+            _nextTriggerUtc = _clock.GetUtcNow().Add(_maximumIntervalRemaining);
         }
     }
 
-    /// <summary>
-    /// 停止計時
-    /// </summary>
-    public void Stop()
-    {
-        _timer.Stop();
-    }
+    internal static bool IsInQuietHours(TimeSpan now, TimeSpan start, TimeSpan end) =>
+        start < end ? now >= start && now < end : start > end && (now >= start || now < end);
 
-    /// <summary>
-    /// 更新提醒項目設定
-    /// </summary>
-    public void UpdateItem(ReminderItem item)
+    private DateTimeOffset GetOneTimeDeadline()
     {
-        Item = item;
-        ResetTimer();
-    }
-
-    private static DateTimeOffset ConvertLocalToUtc(DateTime localDateTime)
-    {
-        var unspecifiedLocal = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
-        for (var minute = 0; minute < 120 && TimeZoneInfo.Local.IsInvalidTime(unspecifiedLocal); minute++)
+        var local = DateTime.SpecifyKind(Item.OneTimeAtLocal ?? _clock.GetLocalNow().DateTime, DateTimeKind.Unspecified);
+        var zone = _clock.LocalTimeZone;
+        for (var minute = 0; minute < 120 && zone.IsInvalidTime(local); minute++)
         {
-            unspecifiedLocal = unspecifiedLocal.AddMinutes(1);
+            local = local.AddMinutes(1);
         }
 
-        try
-        {
-            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecifiedLocal, TimeZoneInfo.Local);
-            return new DateTimeOffset(utc, TimeSpan.Zero);
-        }
-        catch (ArgumentException)
-        {
-            return DateTimeOffset.UtcNow;
-        }
+        try { return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, zone), TimeSpan.Zero); }
+        catch (ArgumentException) { return _clock.GetUtcNow(); }
     }
 
-    public void Dispose()
-    {
-        _timer.Stop();
-        _timer.Dispose();
-    }
+    private static TimeSpan MaxZero(TimeSpan time) => time > TimeSpan.Zero ? time : TimeSpan.Zero;
+
 }
 
-/// <summary>
-/// 提醒實際顯示時的事件資料。
-/// </summary>
 public sealed class ReminderTriggeredEventArgs : EventArgs
 {
     public ReminderTriggeredEventArgs(ReminderItem item, string occurrenceId)
@@ -207,318 +130,242 @@ public sealed class ReminderTriggeredEventArgs : EventArgs
     public string OccurrenceId { get; }
 }
 
-/// <summary>
-/// 提醒服務 - 管理所有提醒計時器
-/// </summary>
-public class ReminderService : IDisposable
+/// <summary>排程與使用者操作都在 WinForms UI 執行緒處理。</summary>
+public sealed class ReminderService : IDisposable
 {
+    private readonly SettingsManager _storage;
+    private readonly TimeProvider _clock;
     private readonly List<ReminderTimer> _timers = new();
-    private readonly System.Windows.Forms.Timer _doNotDisturbChecker;
-    private readonly System.Windows.Forms.Timer _countdownTimer;
-    private bool _isInDoNotDisturbMode = false;
+    private readonly Dictionary<string, string> _pendingOneTime = new();
+    private readonly System.Windows.Forms.Timer _timer;
 
-    /// <summary>
-    /// 提醒觸發事件
-    /// </summary>
     public event EventHandler<ReminderTriggeredEventArgs>? OnReminderTriggered;
-
-    /// <summary>
-    /// 倒數計時更新事件（每秒觸發）
-    /// </summary>
     public event EventHandler? OnCountdownTick;
-
-    /// <summary>
-    /// 是否處於勿擾模式
-    /// </summary>
-    public bool IsInDoNotDisturbMode => _isInDoNotDisturbMode;
-
-    /// <summary>
-    /// 是否全部暫停
-    /// </summary>
-    public bool IsPausedAll { get; private set; } = false;
-
+    public bool IsInDoNotDisturbMode { get; private set; }
+    public bool IsPausedAll { get; private set; }
     public DateTimeOffset? TemporaryPauseUntilUtc { get; private set; }
-    public bool IsTemporarilyPaused => TemporaryPauseUntilUtc > DateTimeOffset.UtcNow;
-    public DateTime? TemporaryPauseUntilLocal => TemporaryPauseUntilUtc?.LocalDateTime;
+    public bool IsTemporarilyPaused => TemporaryPauseUntilUtc > _clock.GetUtcNow();
+    public DateTime? TemporaryPauseUntilLocal => TemporaryPauseUntilUtc is { } until
+        ? TimeZoneInfo.ConvertTime(until, _clock.LocalTimeZone).DateTime : null;
+    public bool CanShowNotifications => !IsPausedAll && !IsTemporarilyPaused && !IsInDoNotDisturbMode;
+    public string? LastError { get; private set; }
 
-    public ReminderService()
+    public ReminderService() : this(SettingsManager.Instance, TimeProvider.System) { }
+
+    internal ReminderService(SettingsManager storage, TimeProvider clock)
     {
-        // 勿擾模式檢查器
-        _doNotDisturbChecker = new System.Windows.Forms.Timer();
-        _doNotDisturbChecker.Interval = 60000; // 每分鐘檢查一次
-        _doNotDisturbChecker.Tick += CheckDoNotDisturb;
-        _doNotDisturbChecker.Start();
-
-        _countdownTimer = new System.Windows.Forms.Timer
-        {
-            Interval = 1000
-        };
-        _countdownTimer.Tick += CountdownTimer_Tick;
-        _countdownTimer.Start();
+        _storage = storage;
+        _clock = clock;
+        _timer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _timer.Tick += (_, _) => Pulse();
     }
 
-    /// <summary>
-    /// 初始化所有提醒計時器
-    /// </summary>
     public void Initialize()
     {
-        var settings = SettingsManager.Instance.Settings;
-        
-        // 清除舊的計時器
-        foreach (var timer in _timers)
-        {
-            timer.Dispose();
-        }
-        _timers.Clear();
-
-        // 建立新的計時器
-        foreach (var item in settings.Reminders)
-        {
-            var timer = new ReminderTimer(item);
-            timer.OnTriggered += (s, item) =>
-            {
-                if (!_isInDoNotDisturbMode && !IsPausedAll)
-                {
-                    var occurrence = SettingsManager.Instance.AddTriggeredRecord(item);
-                    if (item.ScheduleKind == ReminderScheduleKind.OneTime)
-                    {
-                        item.IsEnabled = false;
-                        SettingsManager.Instance.Save();
-                    }
-                    OnReminderTriggered?.Invoke(
-                        this,
-                        new ReminderTriggeredEventArgs(item, occurrence.Id));
-                }
-            };
-            _timers.Add(timer);
-            
-            if (item.IsEnabled)
-            {
-                timer.Start();
-                if (IsPausedAll)
-                {
-                    timer.Pause(ReminderPauseReason.User);
-                }
-                if (IsTemporarilyPaused)
-                {
-                    timer.Pause(ReminderPauseReason.Temporary);
-                }
-            }
-        }
-
-        CheckDoNotDisturb(null, EventArgs.Empty);
+        Reload();
+        _timer.Start();
     }
 
-    private void CountdownTimer_Tick(object? sender, EventArgs e)
+    internal void Pulse()
     {
-        CheckTemporaryPause();
+        RefreshPauseState();
+        foreach (var timer in _timers.ToArray())
+        {
+            if (timer.IsPaused || !timer.Item.IsEnabled || timer.RemainingTime > TimeSpan.Zero) continue;
+            var occurrenceId = Guid.NewGuid().ToString();
+            if (timer.Item.ScheduleKind == ReminderScheduleKind.OneTime)
+            {
+                if (!_pendingOneTime.TryAdd(timer.Item.Id, occurrenceId)) continue;
+            }
+            else
+            {
+                timer.ResetTimer();
+            }
+
+            OnReminderTriggered?.Invoke(this, new ReminderTriggeredEventArgs(timer.Item.Copy(), occurrenceId));
+        }
         OnCountdownTick?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// 取得所有計時器狀態
-    /// </summary>
     public IReadOnlyList<ReminderTimer> GetTimers() => _timers.AsReadOnly();
 
-    /// <summary>
-    /// 根據 ID 取得計時器
-    /// </summary>
-    public ReminderTimer? GetTimerById(string id)
+    public ReminderTimer? GetTimerById(string id) => _timers.Find(timer => timer.Item.Id == id);
+
+    internal bool RecordShown(ReminderItem item, string occurrenceId)
     {
-        return _timers.FirstOrDefault(t => t.Item.Id == id);
+        LastError = null;
+        if (_storage.ContainsRecord(occurrenceId)) return true;
+
+        var timer = GetTimerById(item.Id);
+        if (timer == null || !timer.Item.IsEnabled ||
+            (item.ScheduleKind == ReminderScheduleKind.OneTime
+                && _pendingOneTime.GetValueOrDefault(item.Id) != occurrenceId))
+        {
+            LastError = "此提醒的排程已變更。";
+            return false;
+        }
+        if (!_storage.RecordShown(item, occurrenceId)) return StorageFailed();
+
+        if (item.ScheduleKind == ReminderScheduleKind.OneTime)
+        {
+            _pendingOneTime.Remove(item.Id);
+            timer.UpdateItem(_storage.Settings.Reminders.Single(reminder => reminder.Id == item.Id));
+        }
+        return true;
     }
 
-    /// <summary>
-    /// 稍後提醒指定項目
-    /// </summary>
-    public bool Snooze(string id, string occurrenceId)
+    internal void ReleaseUnrecordedPresentation(string id, string occurrenceId)
     {
+        if (_pendingOneTime.GetValueOrDefault(id) != occurrenceId) return;
+        _pendingOneTime.Remove(id);
+        GetTimerById(id)?.RetryPresentation();
+    }
+
+    internal bool Snooze(ReminderItem presentedItem, string occurrenceId, int minutes)
+    {
+        LastError = null;
+        var id = presentedItem.Id;
         var timer = GetTimerById(id);
-        if (timer == null)
+        if (timer == null || !_storage.HasTriggeredRecord(id, occurrenceId))
         {
+            LastError = "找不到可稍後的提醒，排程未變更。";
             return false;
         }
 
-        var snoozeMinutes = SettingsManager.Instance.Settings.SnoozeMinutes;
+        // 已顯示的通知可能比目前設定舊。只延後它原本指向的排程。
+        var current = timer.Item;
+        if (current.ScheduleKind != presentedItem.ScheduleKind ||
+            (current.ScheduleKind == ReminderScheduleKind.OneTime
+                ? current.OneTimeAtLocal != presentedItem.OneTimeAtLocal
+                : !current.IsEnabled || current.IntervalMinutes != presentedItem.IntervalMinutes))
+        {
+            LastError = "此提醒的排程已變更，無法從這張通知延後。";
+            return false;
+        }
+
+        AppSettings? candidate = null;
         if (timer.Item.ScheduleKind == ReminderScheduleKind.OneTime)
         {
-            timer.Item.OneTimeAtLocal = DateTime.Now.AddMinutes(snoozeMinutes);
+            candidate = _storage.Settings.Copy();
+            var item = candidate.Reminders.Single(reminder => reminder.Id == id);
+            item.OneTimeAtLocal = TimeZoneInfo.ConvertTime(_clock.GetUtcNow().AddMinutes(minutes),
+                _clock.LocalTimeZone).DateTime;
+            item.IsEnabled = true;
         }
-        timer.Snooze(snoozeMinutes);
-        return SettingsManager.Instance.UpdateRecordStatus(
-            occurrenceId,
-            ReminderStatus.Snoozed);
+        if (!_storage.UpdateRecordStatus(occurrenceId, ReminderStatus.Snoozed, candidate))
+        {
+            return StorageFailed();
+        }
+
+        if (candidate != null)
+        {
+            timer.UpdateItem(candidate.Reminders.Single(reminder => reminder.Id == id));
+        }
+        RefreshPauseState();
+        timer.Snooze(minutes);
+        return true;
     }
 
-    /// <summary>
-    /// 標記提醒為已完成
-    /// </summary>
-    public bool MarkCompleted(string occurrenceId)
+    public bool MarkCompleted(string occurrenceId) => SetStatus(occurrenceId, ReminderStatus.Completed);
+    public bool Dismiss(string occurrenceId) => SetStatus(occurrenceId, ReminderStatus.Dismissed);
+    public bool MarkMissed(string occurrenceId) => SetStatus(occurrenceId, ReminderStatus.Missed);
+
+    private bool SetStatus(string occurrenceId, ReminderStatus status)
     {
-        return SettingsManager.Instance.UpdateRecordStatus(
-            occurrenceId,
-            ReminderStatus.Completed);
+        LastError = null;
+        return _storage.UpdateRecordStatus(occurrenceId, status) || StorageFailed();
     }
 
-    /// <summary>
-    /// 將本次提醒標記為略過。
-    /// </summary>
-    public bool Dismiss(string occurrenceId)
+    private bool StorageFailed()
     {
-        return SettingsManager.Instance.UpdateRecordStatus(
-            occurrenceId,
-            ReminderStatus.Dismissed);
+        LastError = _storage.LastError;
+        return false;
     }
 
-    /// <summary>
-    /// 將逾時未操作的通知標記為錯過。
-    /// </summary>
-    public bool MarkMissed(string occurrenceId)
-    {
-        return SettingsManager.Instance.UpdateRecordStatus(
-            occurrenceId,
-            ReminderStatus.Missed);
-    }
-
-    /// <summary>
-    /// 暫停所有提醒
-    /// </summary>
     public void PauseAll()
     {
         IsPausedAll = true;
-        foreach (var timer in _timers)
-        {
-            timer.Pause(ReminderPauseReason.User);
-        }
+        RefreshPauseState();
     }
 
-    /// <summary>
-    /// 恢復所有提醒
-    /// </summary>
     public void ResumeAll()
     {
         IsPausedAll = false;
-        foreach (var timer in _timers)
-        {
-            if (timer.Item.IsEnabled)
-            {
-                timer.Resume(ReminderPauseReason.User);
-            }
-        }
+        RefreshPauseState();
     }
 
-    /// <summary>
-    /// 暫停所有提醒至指定時間，但不覆蓋使用者手動暫停或勿擾狀態。
-    /// </summary>
     public void PauseUntil(DateTimeOffset resumeAtUtc)
     {
         TemporaryPauseUntilUtc = resumeAtUtc;
-        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
-        {
-            timer.Pause(ReminderPauseReason.Temporary);
-        }
-
+        RefreshPauseState();
         OnCountdownTick?.Invoke(this, EventArgs.Empty);
     }
 
-    public void PauseFor(TimeSpan duration)
-    {
-        PauseUntil(DateTimeOffset.UtcNow.Add(duration));
-    }
+    public void PauseFor(TimeSpan duration) => PauseUntil(_clock.GetUtcNow().Add(duration));
 
     public void PauseUntilEndOfDay()
     {
-        var tomorrowLocal = DateTime.Today.AddDays(1);
-        PauseUntil(new DateTimeOffset(tomorrowLocal).ToUniversalTime());
+        var tomorrow = _clock.GetLocalNow().Date.AddDays(1);
+        PauseUntil(TimeZoneInfo.ConvertTimeToUtc(tomorrow, _clock.LocalTimeZone));
     }
 
     public void ResumeTemporaryPause()
     {
         TemporaryPauseUntilUtc = null;
-        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
-        {
-            timer.Resume(ReminderPauseReason.Temporary);
-        }
-
+        RefreshPauseState();
         OnCountdownTick?.Invoke(this, EventArgs.Empty);
     }
 
-    private void CheckTemporaryPause()
+    /// <summary>回傳因排程變更或刪除而需取消等待通知的提醒 ID。</summary>
+    public IReadOnlySet<string> Reload()
     {
-        if (TemporaryPauseUntilUtc is { } resumeAt && DateTimeOffset.UtcNow >= resumeAt)
+        var previous = _timers.ToDictionary(timer => timer.Item.Id);
+        var invalidated = new HashSet<string>();
+        _timers.Clear();
+        foreach (var item in _storage.Settings.Reminders)
         {
-            ResumeTemporaryPause();
-        }
-    }
-
-    /// <summary>
-    /// 重新載入設定
-    /// </summary>
-    public void Reload()
-    {
-        Initialize();
-    }
-
-    /// <summary>
-    /// 在系統喚醒或時間調整後校準所有計時器。
-    /// </summary>
-    public void RecalibrateAfterSystemChange()
-    {
-        CheckDoNotDisturb(null, EventArgs.Empty);
-        foreach (var timer in _timers)
-        {
-            timer.RecalibrateAfterSystemChange();
-        }
-
-        OnCountdownTick?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>
-    /// 檢查勿擾模式
-    /// </summary>
-    private void CheckDoNotDisturb(object? sender, EventArgs e)
-    {
-        var settings = SettingsManager.Instance.Settings;
-        
-        var newMode = false;
-        if (settings.DoNotDisturbEnabled)
-        {
-            var now = DateTime.Now.TimeOfDay;
-            var start = settings.DoNotDisturbStart;
-            var end = settings.DoNotDisturbEnd;
-
-            // 處理跨午夜的情況
-            newMode = start < end
-                ? now >= start && now < end
-                : now >= start || now < end;
-        }
-
-        _isInDoNotDisturbMode = newMode;
-        foreach (var timer in _timers.Where(timer => timer.Item.IsEnabled))
-        {
-            if (newMode)
+            if (previous.Remove(item.Id, out var existing))
             {
-                timer.Pause(ReminderPauseReason.DoNotDisturb);
+                if (existing.UpdateItem(item)) invalidated.Add(item.Id);
+                _timers.Add(existing);
             }
             else
             {
-                timer.Resume(ReminderPauseReason.DoNotDisturb);
+                _timers.Add(new ReminderTimer(item, _clock));
             }
         }
+        invalidated.UnionWith(previous.Keys);
+        foreach (var id in invalidated) _pendingOneTime.Remove(id);
+        RefreshPauseState();
+        return invalidated;
     }
 
-    public void Dispose()
+    public void RecalibrateAfterSystemChange()
     {
-        _doNotDisturbChecker.Stop();
-        _doNotDisturbChecker.Dispose();
+        RefreshPauseState();
+        foreach (var timer in _timers) timer.RecalibrateAfterSystemChange();
+        OnCountdownTick?.Invoke(this, EventArgs.Empty);
+    }
 
-        _countdownTimer.Stop();
-        _countdownTimer.Dispose();
+    private void RefreshPauseState()
+    {
+        if (!IsTemporarilyPaused) TemporaryPauseUntilUtc = null;
+        var settings = _storage.Settings;
+        IsInDoNotDisturbMode = settings.DoNotDisturbEnabled
+            && ReminderTimer.IsInQuietHours(_clock.GetLocalNow().TimeOfDay,
+                settings.DoNotDisturbStart, settings.DoNotDisturbEnd);
 
         foreach (var timer in _timers)
         {
-            timer.Dispose();
+            // 先加入正在生效的原因，再解除過期原因，避免中間短暫恢復。
+            if (IsPausedAll) timer.Pause(ReminderPauseReason.User);
+            if (IsTemporarilyPaused) timer.Pause(ReminderPauseReason.Temporary);
+            if (IsInDoNotDisturbMode) timer.Pause(ReminderPauseReason.DoNotDisturb);
+            if (!IsPausedAll) timer.Resume(ReminderPauseReason.User);
+            if (!IsTemporarilyPaused) timer.Resume(ReminderPauseReason.Temporary);
+            if (!IsInDoNotDisturbMode) timer.Resume(ReminderPauseReason.DoNotDisturb);
         }
-        _timers.Clear();
     }
+
+    public void Dispose() => _timer.Dispose();
 }

@@ -27,7 +27,8 @@ public sealed record ReminderPopupRequest(
     string OccurrenceId,
     int SnoozeMinutes,
     bool ReduceMotion = false,
-    bool FocusForKeyboard = false);
+    bool FocusForKeyboard = false,
+    bool IsPreview = false);
 
 public sealed class ReminderPopupActionEventArgs : EventArgs
 {
@@ -39,6 +40,7 @@ public sealed class ReminderPopupActionEventArgs : EventArgs
 
     public ReminderPopupRequest Request { get; }
     public ReminderPopupAction Action { get; }
+    public string? Error { get; set; }
 }
 
 /// <summary>
@@ -65,11 +67,11 @@ public sealed class ReminderPopupForm : Form
     private int _animationStartY;
     private int _animationEndY;
     private bool _isClosing;
-    private bool _actionRaised;
-    private bool _suppressAction;
+    private bool _actionCommitted;
     private bool _activityStarted;
-    private DateTimeOffset _activityEndsAtUtc;
-    private ReminderPopupAction _closingAction;
+    private bool _activityFinished;
+    private bool _storageFailed;
+    private long _activityStartedAt;
 
     public ReminderPopupForm(ReminderPopupRequest request, Screen screen)
     {
@@ -112,6 +114,7 @@ public sealed class ReminderPopupForm : Form
     }
 
     public event EventHandler<ReminderPopupActionEventArgs>? ActionSelected;
+    public event EventHandler? Presented;
 
     protected override bool ShowWithoutActivation => !_request.FocusForKeyboard;
 
@@ -159,6 +162,7 @@ public sealed class ReminderPopupForm : Form
         {
             Bounds = _targetBounds;
             Opacity = 1;
+            Presented?.Invoke(this, EventArgs.Empty);
             if (_foxAnimation != null)
             {
                 _foxAnimation.Play(GetReminderAnimationState());
@@ -251,13 +255,13 @@ public sealed class ReminderPopupForm : Form
             Color.White,
             (_, _) =>
             {
-                if (_request.Item.ActionKind == ReminderActionKind.TimedActivity)
+                if (_activityFinished || _request.Item.ActionKind == ReminderActionKind.Manual)
                 {
-                    StartActivity();
+                    CompleteManualAction();
                 }
                 else
                 {
-                    CompleteManualAction();
+                    StartActivity();
                 }
             });
         _primaryButton.Location = new Point(24, 178);
@@ -281,7 +285,11 @@ public sealed class ReminderPopupForm : Form
             "略過這次提醒。快捷鍵 Alt+K 或 Esc。",
             Color.FromArgb(244, 240, 237),
             AppTheme.SecondaryText,
-            (_, _) => BeginClose(ReminderPopupAction.Dismissed));
+            (_, _) =>
+            {
+                if (_storageFailed) ForceClose();
+                else BeginClose(ReminderPopupAction.Dismissed);
+            });
         _dismissButton.Location = new Point(290, 178);
         _dismissButton.Size = new Size(102, 40);
         _dismissButton.TabIndex = 2;
@@ -356,8 +364,7 @@ public sealed class ReminderPopupForm : Form
         }
 
         _activityStarted = true;
-        var durationSeconds = Math.Clamp(_request.Item.ActivityDurationSeconds, 5, 3600);
-        _activityEndsAtUtc = DateTimeOffset.UtcNow.AddSeconds(durationSeconds);
+        _activityStartedAt = Stopwatch.GetTimestamp();
         _autoCloseTimer.Stop();
         _successTimer.Stop();
 
@@ -385,9 +392,10 @@ public sealed class ReminderPopupForm : Form
 
     private void CompleteManualAction()
     {
-        if (_isClosing) return;
+        if (_isClosing || !TryCommit(ReminderPopupAction.Completed)) return;
 
         _autoCloseTimer.Stop();
+        if (_activityFinished) PlayCompletionSound();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
         SetActivityStatus("收到！這次任務已記錄完成", AppTheme.Healthy);
         if (_primaryButton != null)
@@ -410,7 +418,7 @@ public sealed class ReminderPopupForm : Form
         if (!_activityStarted || _activityProgress == null || _activityStatusLabel == null) return;
 
         var durationSeconds = Math.Clamp(_request.Item.ActivityDurationSeconds, 5, 3600);
-        var remaining = _activityEndsAtUtc - DateTimeOffset.UtcNow;
+        var remaining = TimeSpan.FromSeconds(durationSeconds) - Stopwatch.GetElapsedTime(_activityStartedAt);
         if (remaining <= TimeSpan.Zero)
         {
             CompleteActivity();
@@ -428,7 +436,18 @@ public sealed class ReminderPopupForm : Form
         if (!_activityStarted) return;
 
         _activityStarted = false;
+        _activityFinished = true;
         _activityTimer.Stop();
+        if (!TryCommit(ReminderPopupAction.Completed))
+        {
+            if (_primaryButton != null)
+            {
+                _primaryButton.Text = "重試儲存 (&S)";
+                _primaryButton.Enabled = true;
+                if (_request.FocusForKeyboard) _primaryButton.Select();
+            }
+            return;
+        }
         PlayCompletionSound();
         _foxAnimation?.Play(FoxAnimationState.Celebrate);
         if (_activityProgress != null)
@@ -575,12 +594,13 @@ public sealed class ReminderPopupForm : Form
 
         if (_isClosing)
         {
-            RaiseActionAndClose();
+            Close();
         }
         else
         {
             Top = _targetBounds.Top;
             Opacity = 1;
+            Presented?.Invoke(this, EventArgs.Empty);
             _foxAnimation?.Play(GetReminderAnimationState());
             _autoCloseTimer.Start();
             if (_request.Item.ActionKind == ReminderActionKind.TimedActivity && _request.Item.AutoStartActivity)
@@ -608,16 +628,15 @@ public sealed class ReminderPopupForm : Form
 
     private void BeginClose(ReminderPopupAction action)
     {
-        if (_isClosing) return;
+        if (_isClosing || !TryCommit(action)) return;
 
         _isClosing = true;
-        _closingAction = action;
         _autoCloseTimer.Stop();
         _activityTimer.Stop();
         _successTimer.Stop();
         if (_request.ReduceMotion)
         {
-            RaiseActionAndClose();
+            Close();
             return;
         }
         _foxAnimation?.Play(FoxAnimationState.RollOut);
@@ -626,22 +645,33 @@ public sealed class ReminderPopupForm : Form
         BeginAnimation();
     }
 
-    private void RaiseActionAndClose()
+    private bool TryCommit(ReminderPopupAction action)
     {
-        if (!_suppressAction && !_actionRaised)
+        if (_actionCommitted) return true;
+
+        var args = new ReminderPopupActionEventArgs(_request, action);
+        ActionSelected?.Invoke(this, args);
+        if (args.Error == null)
         {
-            _actionRaised = true;
-            ActionSelected?.Invoke(
-                this,
-                new ReminderPopupActionEventArgs(_request, _closingAction));
+            _actionCommitted = true;
+            return true;
         }
 
-        Close();
+        _storageFailed = true;
+        _autoCloseTimer.Stop();
+        if (_messageLabel != null) _messageLabel.Text = args.Error;
+        SetActivityStatus("未儲存，可重試或關閉通知", AppTheme.Danger);
+        if (_dismissButton != null)
+        {
+            _dismissButton.Text = "關閉 (&K)";
+            _dismissButton.AccessibleName = "關閉並保留原紀錄";
+            _dismissButton.Enabled = true;
+        }
+        return false;
     }
 
     public void ForceClose()
     {
-        _suppressAction = true;
         _animationTimer.Stop();
         _autoCloseTimer.Stop();
         Close();

@@ -33,6 +33,8 @@ static class Program
         using var mutex = new Mutex(true, "HealthReminder_SingleInstance", out createdNew);
         if (!createdNew)
         {
+            if (args.Contains("--deployment-start", StringComparer.OrdinalIgnoreCase)) return 8;
+
             MessageBox.Show(
                 "健康提醒小幫手已經在執行中！\n請查看右下角系統托盤。",
                 "提示",
@@ -70,7 +72,10 @@ static class Program
         try
         {
             SettingsManager.ConfigureStorage(storageSelection);
-            _ = SettingsManager.Instance;
+            if (SettingsManager.Instance.LoadWarning is { } warning)
+            {
+                MessageBox.Show(warning, "部分資料需要修復", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
         catch (Exception ex)
         {

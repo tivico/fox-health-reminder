@@ -42,10 +42,19 @@ public class ReminderRecord
     /// </summary>
     public DateTime Timestamp { get; set; } = DateTime.Now;
 
+    public DateTime? OneTimeScheduledAtLocal { get; set; }
+
     /// <summary>
     /// 本次提醒目前的狀態。
     /// </summary>
     public ReminderStatus Status { get; set; } = ReminderStatus.Triggered;
+
+    internal ReminderRecord WithStatus(ReminderStatus status)
+    {
+        var copy = (ReminderRecord)MemberwiseClone();
+        copy.Status = status;
+        return copy;
+    }
 
     /// <summary>
     /// 舊版資料相容欄位。新程式應使用 Status。

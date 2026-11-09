@@ -10,6 +10,8 @@ Set-StrictMode -Version Latest
 $projectRoot = $PSScriptRoot
 $projectFile = Join-Path $projectRoot 'HealthReminder.csproj'
 $verificationProject = Join-Path $projectRoot 'Verification\HealthReminder.Verification.csproj'
+$buildDirectory = Join-Path $projectRoot 'artifacts\build\release'
+$publishBuildDirectory = Join-Path $buildDirectory 'win-x64'
 $publishProfile = 'PortableSingleFile'
 $publishDirectory = Join-Path $projectRoot 'artifacts\publish\win-x64-single-file'
 $installerDirectory = Join-Path $projectRoot 'artifacts\installer'
@@ -18,8 +20,14 @@ $quickGuide = Join-Path $projectRoot '使用說明.txt'
 $releaseVerifier = Join-Path $projectRoot 'Verification\verify-release.ps1'
 $artifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'artifacts'))
 
-function Clear-ReleaseDirectory {
-    param([Parameter(Mandatory)][string]$Path)
+$publishedFileNames = @('HealthReminder.exe')
+$installerFileNames = @('狐狸健康提醒安裝程式.exe', '使用說明.txt')
+
+function Get-ReleaseOutputFiles {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$AllowedFiles
+    )
 
     $resolvedPath = [System.IO.Path]::GetFullPath($Path)
     $expectedPrefix = $artifactsRoot.TrimEnd(
@@ -30,11 +38,37 @@ function Clear-ReleaseDirectory {
         throw "拒絕清理 artifacts 以外的路徑：$resolvedPath"
     }
 
-    if (Test-Path -LiteralPath $resolvedPath) {
-        Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+    # 防止發布路徑經由 junction 或連結指向別處。
+    for ($folder = $resolvedPath; ; $folder = Split-Path -Path $folder -Parent) {
+        if (Test-Path -LiteralPath $folder) {
+            $directory = Get-Item -LiteralPath $folder -Force
+            if (-not $directory.PSIsContainer -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "發布路徑必須是一般資料夾：$folder"
+            }
+        }
+        if ($folder -eq $artifactsRoot) { break }
     }
 
-    New-Item -ItemType Directory -Path $resolvedPath -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $resolvedPath)) { return }
+
+    $entries = @(Get-ChildItem -LiteralPath $resolvedPath -Force)
+    foreach ($entry in $entries) {
+        if ($entry.PSIsContainer -or $entry.Name -notin $AllowedFiles -or
+            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "發布目錄包含非成品項目，請先移至其他位置：$($entry.FullName)"
+        }
+    }
+    return $entries
+}
+
+function Clear-ReleaseDirectory {
+    param([string]$Path, [string[]]$AllowedFiles)
+
+    # 只刪除已知成品，保留可能仍被執行中程式使用的工作目錄。
+    foreach ($file in Get-ReleaseOutputFiles -Path $Path -AllowedFiles $AllowedFiles) {
+        Remove-Item -LiteralPath $file.FullName -Force
+    }
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
 
 function Invoke-DotNet {
@@ -87,25 +121,32 @@ function Find-InnoCompiler {
 
 Push-Location $projectRoot
 try {
+    $compiler = Find-InnoCompiler
+    Get-ReleaseOutputFiles -Path $publishDirectory -AllowedFiles $publishedFileNames | Out-Null
+    Get-ReleaseOutputFiles -Path $installerDirectory -AllowedFiles $installerFileNames | Out-Null
+
     Write-Host '1/5 建置 Release...' -ForegroundColor Cyan
-    Invoke-DotNet @('build', $projectFile, '-c', 'Release')
+    # 中間建置與使用中的 bin 分開，避免背景程式鎖住 apphost.exe 而阻止發布。
+    Invoke-DotNet @('build', $projectFile, '-c', 'Release', '-o', $buildDirectory)
 
     if (-not $SkipVerification) {
         Write-Host '2/5 執行 Verification...' -ForegroundColor Cyan
-        Invoke-DotNet @('run', '--project', $verificationProject, '-c', 'Release')
+        Invoke-DotNet @('build', $verificationProject, '-c', 'Release', '-o', $buildDirectory)
+        Invoke-DotNet @((Join-Path $buildDirectory 'HealthReminder.Verification.dll'))
     }
     else {
         Write-Host '2/5 已略過 Verification。' -ForegroundColor Yellow
     }
 
     Write-Host '3/5 產生 self-contained 單一 EXE...' -ForegroundColor Cyan
-    Clear-ReleaseDirectory -Path $publishDirectory
+    Clear-ReleaseDirectory -Path $publishDirectory -AllowedFiles $publishedFileNames
     Invoke-DotNet @(
         'publish',
         $projectFile,
         '-c',
         'Release',
         "-p:PublishProfile=$publishProfile",
+        "-p:OutputPath=$publishBuildDirectory\",
         "-p:PublishDir=$publishDirectory\"
     )
 
@@ -120,8 +161,7 @@ try {
     }
 
     Write-Host '4/5 產生親友安裝包...' -ForegroundColor Cyan
-    Clear-ReleaseDirectory -Path $installerDirectory
-    $compiler = Find-InnoCompiler
+    Clear-ReleaseDirectory -Path $installerDirectory -AllowedFiles $installerFileNames
     & $compiler $installerScript
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup 編譯失敗，結束碼：$LASTEXITCODE"

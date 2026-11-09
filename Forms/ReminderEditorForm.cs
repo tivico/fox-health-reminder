@@ -24,11 +24,13 @@ public sealed class ReminderEditorForm : Form
     private readonly Label _autoStartLabel;
     private readonly ToggleSwitch _enabledSwitch;
     private readonly ToggleSwitch _soundSwitch;
+    private readonly ReminderItem? _sourceItem;
     private readonly ReminderItem _workingItem;
 
     public ReminderEditorForm(ReminderItem? source = null)
     {
-        _workingItem = source == null ? CreateDefaultItem() : CloneItem(source);
+        _sourceItem = source;
+        _workingItem = source?.Copy() ?? CreateDefaultItem();
 
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = AppTheme.WindowBackground;
@@ -56,7 +58,7 @@ public sealed class ReminderEditorForm : Form
             Location = new Point(30, 58),
             Size = new Size(500, 24),
             ForeColor = AppTheme.SecondaryText,
-            Text = "自由組合持續／一次性排程，以及手動／計時完成方式。"
+            Text = "完成後先保留為草稿，回設定頁按「儲存設定」才會生效。"
         });
 
         _nameTextBox = CreateTextBox(new Point(30, 118), new Size(326, 30));
@@ -120,7 +122,7 @@ public sealed class ReminderEditorForm : Form
         cancelButton.Location = new Point(306, 566);
         cancelButton.DialogResult = DialogResult.Cancel;
 
-        var saveButton = CreateButton("儲存提醒", AppTheme.Primary, Color.White);
+        var saveButton = CreateButton(source == null ? "加入草稿" : "更新草稿", AppTheme.Primary, Color.White);
         saveButton.Location = new Point(416, 566);
         saveButton.Click += SaveButton_Click;
 
@@ -207,7 +209,22 @@ public sealed class ReminderEditorForm : Form
         }
 
         var scheduleKind = (ReminderScheduleKind)Math.Max(0, _scheduleKindComboBox.SelectedIndex);
-        if (scheduleKind == ReminderScheduleKind.OneTime && _enabledSwitch.Checked && _oneTimeInput.Value <= DateTime.Now)
+        var isEnabled = _enabledSwitch.Checked;
+        DateTime? oneTimeAt = scheduleKind == ReminderScheduleKind.OneTime ? _oneTimeInput.Value : null;
+
+        // 編輯視窗開啟期間，通知仍可能停用一次性提醒或將它延後。
+        // 排程欄位未被編輯時，採用主畫面已同步的草稿值。
+        if (_sourceItem?.ScheduleKind == ReminderScheduleKind.OneTime
+            && _workingItem.ScheduleKind == ReminderScheduleKind.OneTime
+            && _workingItem.OneTimeAtLocal is { } originalTime
+            && oneTimeAt == ClampDateTime(originalTime)
+            && isEnabled == _workingItem.IsEnabled)
+        {
+            oneTimeAt = _sourceItem.OneTimeAtLocal;
+            isEnabled = _sourceItem.IsEnabled;
+        }
+
+        if (scheduleKind == ReminderScheduleKind.OneTime && isEnabled && oneTimeAt <= DateTime.Now)
         {
             ShowValidationMessage("一次性提醒時間必須晚於現在。", _oneTimeInput);
             return;
@@ -218,13 +235,11 @@ public sealed class ReminderEditorForm : Form
         _workingItem.Emoji = _emojiComboBox.SelectedItem?.ToString() ?? "💡";
         _workingItem.ScheduleKind = scheduleKind;
         _workingItem.IntervalMinutes = (int)_intervalInput.Value;
-        _workingItem.OneTimeAtLocal = scheduleKind == ReminderScheduleKind.OneTime
-            ? _oneTimeInput.Value
-            : null;
+        _workingItem.OneTimeAtLocal = oneTimeAt;
         _workingItem.ActionKind = (ReminderActionKind)Math.Max(0, _actionKindComboBox.SelectedIndex);
         _workingItem.ActivityDurationSeconds = (int)_activitySecondsInput.Value;
         _workingItem.AutoStartActivity = _workingItem.ActionKind == ReminderActionKind.TimedActivity && _autoStartSwitch.Checked;
-        _workingItem.IsEnabled = _enabledSwitch.Checked;
+        _workingItem.IsEnabled = isEnabled;
         _workingItem.PlaySound = _soundSwitch.Checked;
         DialogResult = DialogResult.OK;
         Close();
@@ -250,26 +265,6 @@ public sealed class ReminderEditorForm : Form
             Emoji = "💡",
             IsEnabled = true,
             PlaySound = true
-        };
-    }
-
-    private static ReminderItem CloneItem(ReminderItem source)
-    {
-        return new ReminderItem
-        {
-            Id = source.Id,
-            Type = source.Type,
-            Name = source.Name,
-            Message = source.Message,
-            IntervalMinutes = source.IntervalMinutes,
-            ScheduleKind = source.ScheduleKind,
-            OneTimeAtLocal = source.OneTimeAtLocal,
-            ActionKind = source.ActionKind,
-            ActivityDurationSeconds = source.ActivityDurationSeconds,
-            AutoStartActivity = source.AutoStartActivity,
-            IsEnabled = source.IsEnabled,
-            PlaySound = source.PlaySound,
-            Emoji = source.Emoji
         };
     }
 

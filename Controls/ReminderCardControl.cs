@@ -21,6 +21,7 @@ public sealed class ReminderCardControl : UserControl
         Item = item;
         BackColor = AppTheme.CardBackground;
         DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Height = 104;
         Margin = new Padding(0, 0, 0, 10);
         Padding = new Padding(16);
@@ -66,6 +67,7 @@ public sealed class ReminderCardControl : UserControl
         _enabledSwitch.CheckedChanged += (_, _) =>
         {
             Item.IsEnabled = _enabledSwitch.Checked;
+            Changed?.Invoke(this, EventArgs.Empty);
             EnabledChangedByUser?.Invoke(this, EventArgs.Empty);
         };
 
@@ -87,12 +89,24 @@ public sealed class ReminderCardControl : UserControl
         Controls.Add(editButton);
         Controls.Add(deleteButton);
 
-        Resize += (_, _) =>
+        void ArrangeContent()
         {
-            _enabledSwitch.Left = ClientSize.Width - 214;
-            editButton.Left = ClientSize.Width - 154;
-            deleteButton.Left = ClientSize.Width - 80;
-        };
+            var compact = ClientSize.Width < (int)(660 * (DeviceDpi / 96f));
+            var scale = DeviceDpi / 96f;
+            int Px(int value) => (int)Math.Round(value * scale);
+            Height = Px(compact ? 146 : 104);
+            var actionsTop = Px(compact ? 102 : 16);
+            _enabledSwitch.Location = new Point(ClientSize.Width - Px(214), actionsTop + Px(3));
+            editButton.Location = new Point(ClientSize.Width - Px(154), actionsTop);
+            deleteButton.Location = new Point(ClientSize.Width - Px(80), actionsTop);
+            var textRight = compact ? ClientSize.Width - Px(16) : _enabledSwitch.Left - Px(12);
+            _nameLabel.Width = Math.Max(Px(40), textRight - _nameLabel.Left);
+            _detailLabel.Width = _nameLabel.Width;
+            _messageLabel.Width = Math.Max(Px(40), ClientSize.Width - _messageLabel.Left - Px(16));
+        }
+        Resize += (_, _) => ArrangeContent();
+        DpiChangedAfterParent += (_, _) => ArrangeContent();
+        ArrangeContent();
         RefreshContent();
     }
 
@@ -100,6 +114,7 @@ public sealed class ReminderCardControl : UserControl
 
     public event EventHandler? EditRequested;
     public event EventHandler? DeleteRequested;
+    public event EventHandler? Changed;
     public event EventHandler? EnabledChangedByUser;
 
     public void UpdateItem(ReminderItem item)

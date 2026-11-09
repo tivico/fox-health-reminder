@@ -5,391 +5,366 @@ using HealthReminder.Models;
 namespace HealthReminder.Services;
 
 /// <summary>
-/// 設定檔管理服務
+/// 設定與統計各自讀寫。跨兩個檔案的提醒操作先寫入可重播的提交紀錄。
 /// </summary>
-public class SettingsManager
+public sealed class SettingsManager
 {
     private static SettingsManager? _instance;
-    private static readonly object _lock = new object();
+    private static readonly object _lock = new();
     private static StorageLocationSelection? _configuredStorage;
     private readonly string _settingsPath;
     private readonly string _statisticsPath;
+    private readonly string _commitPath;
+    private string? _settingsReadError;
+    private string? _statisticsReadError;
+    private string? _migrationWarning;
 
-    public AppSettings Settings { get; private set; } = new AppSettings();
-    public List<DailyStatistics> Statistics { get; private set; } = new List<DailyStatistics>();
+    public AppSettings Settings { get; private set; } = new();
+    public List<DailyStatistics> Statistics { get; private set; } = new();
     public string? LastError { get; private set; }
+    public string? LoadWarning => string.Join(Environment.NewLine,
+        new[] { _settingsReadError, _statisticsReadError, _migrationWarning }.OfType<string>()) is { Length: > 0 } warning
+        ? warning
+        : null;
     public string StorageFolder { get; }
     public bool UsesPortableStorage { get; }
     public string? StorageNotice { get; }
 
-    /// <summary>
-    /// 單例模式取得實例
-    /// </summary>
     public static SettingsManager Instance
     {
         get
         {
-            if (_instance == null)
+            lock (_lock)
             {
-                lock (_lock)
-                {
-                    _instance ??= new SettingsManager();
-                }
+                return _instance ??= new SettingsManager(_configuredStorage ?? new StorageLocationSelection(
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "HealthReminder"), false));
             }
-            return _instance;
         }
     }
 
     internal static void ConfigureStorage(StorageLocationSelection selection)
     {
         ArgumentNullException.ThrowIfNull(selection);
-
         lock (_lock)
         {
             if (_instance != null)
             {
                 throw new InvalidOperationException("設定管理服務初始化後不可再變更資料位置。");
             }
-
-            _configuredStorage = selection with { Folder = Path.GetFullPath(selection.Folder) };
+            _configuredStorage = selection;
         }
     }
 
-    private SettingsManager()
+    internal SettingsManager(StorageLocationSelection storage)
     {
-        var storage = _configuredStorage ?? new StorageLocationSelection(
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "HealthReminder"),
-            false);
-
-        StorageFolder = storage.Folder;
+        StorageFolder = Path.GetFullPath(storage.Folder);
         UsesPortableStorage = storage.IsPortable;
         StorageNotice = storage.Notice;
         _settingsPath = Path.Combine(StorageFolder, "settings.json");
         _statisticsPath = Path.Combine(StorageFolder, "statistics.json");
+        _commitPath = Path.Combine(StorageFolder, "pending-commit.json");
 
-        EnsureDirectoryExists();
+        Directory.CreateDirectory(StorageFolder);
+        try { FlushPendingCommit(); }
+        catch (Exception ex) when (IsStorageError(ex))
+        {
+            throw new IOException($"無法恢復 pending-commit.json。請保留提交檔及兩份 JSON 後再排查。\n{ex.Message}", ex);
+        }
         Load();
     }
 
-    /// <summary>
-    /// 確保設定資料夾存在
-    /// </summary>
-    private void EnsureDirectoryExists()
+    private void Load()
     {
-        if (!Directory.Exists(StorageFolder))
+        try
         {
-            Directory.CreateDirectory(StorageFolder);
-        }
-    }
+            if (ReadIfPresent(_settingsPath) is { } json)
+            {
+                var version = JObject.Parse(json).Value<int?>(nameof(AppSettings.SchemaVersion)) ?? 1;
+                if (version > AppSettings.CurrentSchemaVersion)
+                {
+                    throw new InvalidDataException("此檔案來自更新版本的程式。");
+                }
 
-    /// <summary>
-    /// 載入設定
-    /// </summary>
-    public void Load()
-    {
-        var settingsChanged = false;
+                var loaded = Deserialize<AppSettings>(json);
+                if (loaded.Reminders == null || loaded.Reminders.Any(item => item == null))
+                {
+                    throw new InvalidDataException("提醒清單含有空值。");
+                }
+                var normalized = ReminderCollectionNormalizer.Normalize(loaded.Reminders);
+                loaded.Reminders = normalized.Reminders;
+
+                if (version < 2)
+                {
+                    foreach (var item in loaded.Reminders.Where(item => item.Type == ReminderType.EyeRest))
+                    {
+                        item.ActionKind = ReminderActionKind.TimedActivity;
+                        item.ActivityDurationSeconds = 20;
+                        item.AutoStartActivity = false;
+                    }
+                }
+
+                loaded.SchemaVersion = AppSettings.CurrentSchemaVersion;
+                var snoozeMinutes = Math.Clamp(loaded.SnoozeMinutes, 1, 60);
+                var invalidWorkday = !DailyAchievementCalculator.IsValidWorkday(loaded.WorkdayStart, loaded.WorkdayEnd)
+                    || loaded.WorkdayEnd == TimeSpan.FromDays(1);
+                var invalidQuietHours = !IsTimeOfDay(loaded.DoNotDisturbStart)
+                    || !IsTimeOfDay(loaded.DoNotDisturbEnd);
+                var changed = normalized.Changed || version != loaded.SchemaVersion || invalidWorkday
+                    || invalidQuietHours || snoozeMinutes != loaded.SnoozeMinutes;
+                loaded.SnoozeMinutes = snoozeMinutes;
+                if (invalidWorkday)
+                {
+                    loaded.WorkdayStart = TimeSpan.FromHours(9);
+                    loaded.WorkdayEnd = TimeSpan.FromHours(18);
+                }
+                if (invalidQuietHours)
+                {
+                    loaded.DoNotDisturbStart = TimeSpan.FromHours(12);
+                    loaded.DoNotDisturbEnd = TimeSpan.FromHours(13);
+                    loaded.DoNotDisturbEnabled = false;
+                }
+
+                Settings = loaded;
+                if (changed && !SaveSettings(loaded))
+                {
+                    _migrationWarning = $"設定已在記憶體修正，但尚未寫回 settings.json。{Environment.NewLine}{LastError}";
+                }
+            }
+        }
+        catch (Exception ex) when (IsStorageError(ex) || ex is ArgumentException or FormatException
+            or OverflowException)
+        {
+            _settingsReadError = ReadError(_settingsPath, ex);
+            Settings = new AppSettings { Reminders = new() };
+        }
 
         try
         {
-            // 載入應用程式設定
-            if (File.Exists(_settingsPath))
+            if (ReadIfPresent(_statisticsPath) is { } json)
             {
-                var json = File.ReadAllText(_settingsPath);
-                var storedSchemaVersion = JObject.Parse(json).Value<int?>(nameof(AppSettings.SchemaVersion)) ?? 1;
-                Settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
-                settingsChanged = MigrateSettings(storedSchemaVersion);
+                var loaded = Deserialize<List<DailyStatistics>>(json);
+                if (loaded.Any(day => day == null || day.Records == null
+                    || day.Records.Any(record => record == null)))
+                {
+                    throw new InvalidDataException("統計清單含有空值。");
+                }
 
-                // 修復舊設定欄位與重複 Id；不限制任何提醒範本的數量。
-                settingsChanged |= NormalizeReminders();
-                settingsChanged |= NormalizeWorkday();
-            }
-
-            // 載入統計資料
-            if (File.Exists(_statisticsPath))
-            {
-                var json = File.ReadAllText(_statisticsPath);
-                Statistics = JsonConvert.DeserializeObject<List<DailyStatistics>>(json) ?? new List<DailyStatistics>();
-            }
-
-            // 清理超過 30 天的統計資料
-            CleanOldStatistics();
-
-            // 必須等設定與統計都載入後再寫回，避免覆蓋既有統計。
-            if (settingsChanged)
-            {
-                Save();
+                var cutoff = DateTime.Today.AddDays(-30);
+                Statistics = loaded.Where(day => day.Date >= cutoff).ToList();
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsStorageError(ex) || ex is ArgumentException or FormatException
+            or OverflowException)
         {
-            System.Diagnostics.Debug.WriteLine($"載入設定失敗: {ex.Message}");
-            Settings = new AppSettings();
-            Statistics = new List<DailyStatistics>();
+            _statisticsReadError = ReadError(_statisticsPath, ex);
         }
     }
 
-    /// <summary>
-    /// 確保提醒項目的 Id 存在且不重複。
-    /// </summary>
-    private bool NormalizeReminders()
+    internal bool SaveSettings(AppSettings settings) => Commit(settings, null);
+
+    internal bool DeleteReminder(string id)
     {
-        var result = ReminderCollectionNormalizer.Normalize(Settings.Reminders);
-        Settings.Reminders = result.Reminders;
-        return result.Changed;
+        if (!Settings.Reminders.Any(item => item.Id == id)) return true;
+
+        var candidate = Settings.Copy();
+        candidate.Reminders.RemoveAll(item => item.Id == id);
+        return SaveSettings(candidate);
     }
 
-    private bool NormalizeWorkday()
+    public int GetDailyGoalTarget()
     {
-        if (DailyAchievementCalculator.IsValidWorkday(Settings.WorkdayStart, Settings.WorkdayEnd))
-        {
-            return false;
-        }
-
-        Settings.WorkdayStart = new TimeSpan(9, 0, 0);
-        Settings.WorkdayEnd = new TimeSpan(18, 0, 0);
-        return true;
+        var today = GetTodayStatistics();
+        return DailyAchievementCalculator.CalculateGoal(
+            Settings.Reminders, today.Date, Settings.WorkdayStart, Settings.WorkdayEnd, today.Records);
     }
 
-    private bool MigrateSettings(int storedSchemaVersion)
+    public DailyStatistics GetTodayStatistics() =>
+        Statistics.FirstOrDefault(day => day.Date.Date == DateTime.Today)
+            ?? new DailyStatistics { Date = DateTime.Today };
+
+    internal bool ContainsRecord(string occurrenceId) =>
+        Statistics.Any(day => day.Records.Any(record => record.Id == occurrenceId));
+
+    internal bool HasTriggeredRecord(string id, string occurrenceId) =>
+        Statistics.Any(day => day.Records.Any(record => record.Id == occurrenceId
+            && record.ReminderId == id && record.Status == ReminderStatus.Triggered));
+
+    internal bool RecordShown(ReminderItem item, string occurrenceId)
     {
-        var changed = false;
-        if (storedSchemaVersion < 2)
+        var statistics = new List<DailyStatistics>(Statistics);
+        var today = GetTodayStatistics();
+        statistics.Remove(today);
+        statistics.Add(new DailyStatistics
         {
-            foreach (var item in Settings.Reminders.Where(item => item.Type == ReminderType.EyeRest))
+            Date = today.Date,
+            Records = new List<ReminderRecord>(today.Records)
             {
-                item.ActionKind = ReminderActionKind.TimedActivity;
-                item.ActivityDurationSeconds = 20;
-                item.AutoStartActivity = false;
+                new ReminderRecord
+                {
+                    Id = occurrenceId,
+                    ReminderId = item.Id,
+                    Type = item.Type,
+                    Name = item.Name,
+                    Timestamp = DateTime.Now,
+                    OneTimeScheduledAtLocal = item.ScheduleKind == ReminderScheduleKind.OneTime
+                        ? item.OneTimeAtLocal : null
+                }
             }
-            changed = true;
-        }
+        });
 
-        if (Settings.SchemaVersion != AppSettings.CurrentSchemaVersion)
+        AppSettings? settings = null;
+        if (item.ScheduleKind == ReminderScheduleKind.OneTime)
         {
-            Settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
-            changed = true;
+            settings = Settings.Copy();
+            settings.Reminders.Single(reminder => reminder.Id == item.Id).IsEnabled = false;
         }
-        return changed;
+        return Commit(settings, statistics);
     }
 
-    /// <summary>
-    /// 重設為預設值
-    /// </summary>
-    public void ResetToDefaults()
+    internal bool UpdateRecordStatus(string occurrenceId, ReminderStatus status, AppSettings? settings = null)
     {
-        Settings = new AppSettings();
-        Save();
+        var dayIndex = Statistics.FindIndex(day => day.Records.Any(record => record.Id == occurrenceId));
+        if (dayIndex < 0)
+        {
+            return Fail("找不到這次提醒紀錄，狀態未更新。");
+        }
+
+        var day = Statistics[dayIndex];
+        var recordIndex = day.Records.FindIndex(record => record.Id == occurrenceId);
+        var record = day.Records[recordIndex];
+        if (record.Status != ReminderStatus.Triggered)
+        {
+            if (record.Status == status && settings == null) return true;
+            return Fail("這次提醒已經處理過了。");
+        }
+
+        var records = new List<ReminderRecord>(day.Records);
+        records[recordIndex] = record.WithStatus(status);
+        var statistics = new List<DailyStatistics>(Statistics);
+        statistics[dayIndex] = new DailyStatistics { Date = day.Date, Records = records };
+        return Commit(settings, statistics);
     }
 
-    /// <summary>
-    /// 儲存設定
-    /// </summary>
-    public bool Save()
+    private bool Commit(AppSettings? settings, List<DailyStatistics>? statistics)
     {
         LastError = null;
+        if (settings != null && _settingsReadError != null) return Fail(_settingsReadError);
+        if (statistics != null && _statisticsReadError != null) return Fail(_statisticsReadError);
 
         try
         {
-            EnsureDirectoryExists();
+            Directory.CreateDirectory(StorageFolder);
+            FlushPendingCommit();
 
-            // 儲存應用程式設定
-            var settingsJson = JsonConvert.SerializeObject(Settings, Formatting.Indented);
-            WriteAllTextAtomically(_settingsPath, settingsJson);
+            if (settings != null && statistics != null)
+            {
+                var commit = new PendingCommit(
+                    JsonConvert.SerializeObject(settings, Formatting.Indented),
+                    JsonConvert.SerializeObject(statistics, Formatting.Indented));
+                WriteAtomically(_commitPath, JsonConvert.SerializeObject(commit), keepBackup: false);
 
-            // 儲存統計資料
-            var statsJson = JsonConvert.SerializeObject(Statistics, Formatting.Indented);
-            WriteAllTextAtomically(_statisticsPath, statsJson);
+                // 提交紀錄已落盤。展開失敗時保留它，下次寫入或啟動會重播。
+                try { FlushPendingCommit(); }
+                catch (Exception ex) when (IsStorageError(ex))
+                {
+                    LastError = $"已保存操作，等待同步 JSON：{ex.Message}";
+                    System.Diagnostics.Debug.WriteLine(LastError);
+                }
+            }
+            else if (settings != null)
+            {
+                WriteAtomically(_settingsPath, JsonConvert.SerializeObject(settings, Formatting.Indented));
+            }
+            else if (statistics != null)
+            {
+                WriteAtomically(_statisticsPath, JsonConvert.SerializeObject(statistics, Formatting.Indented));
+            }
+
+            if (settings != null) Settings = settings;
+            if (statistics != null) Statistics = statistics;
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsStorageError(ex))
         {
-            LastError = $"無法儲存設定：{ex.Message}";
-            System.Diagnostics.Debug.WriteLine(LastError);
-            return false;
+            return Fail($"無法儲存資料：{ex.Message}");
         }
     }
 
-    private static void WriteAllTextAtomically(string path, string contents)
+    private void FlushPendingCommit()
+    {
+        if (ReadIfPresent(_commitPath) is not { } json) return;
+
+        var pending = Deserialize<PendingCommit>(json);
+        if (string.IsNullOrWhiteSpace(pending.SettingsJson) || string.IsNullOrWhiteSpace(pending.StatisticsJson))
+        {
+            throw new InvalidDataException("待同步提交缺少設定或統計資料。");
+        }
+        // 驗證兩份內容都可解析後才替換任何檔案。
+        Deserialize<AppSettings>(pending.SettingsJson);
+        Deserialize<List<DailyStatistics>>(pending.StatisticsJson);
+        if (ReadIfPresent(_settingsPath) != pending.SettingsJson)
+        {
+            WriteAtomically(_settingsPath, pending.SettingsJson);
+        }
+        if (ReadIfPresent(_statisticsPath) != pending.StatisticsJson)
+        {
+            WriteAtomically(_statisticsPath, pending.StatisticsJson);
+        }
+        File.Delete(_commitPath);
+    }
+
+    private static void WriteAtomically(string path, string contents, bool keepBackup = true)
     {
         var temporaryPath = path + ".tmp";
-
         try
         {
-            File.WriteAllText(temporaryPath, contents);
-            File.Move(temporaryPath, path, true);
+            using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write))
+            {
+                using var writer = new StreamWriter(stream, leaveOpen: true);
+                writer.Write(contents);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+
+            if (keepBackup && File.Exists(path))
+            {
+                File.Replace(temporaryPath, path, path + ".bak");
+            }
+            else
+            {
+                File.Move(temporaryPath, path, overwrite: true);
+            }
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
         }
     }
 
-    /// <summary>
-    /// 計算「今日成就」的目標次數：整個工作時段內，所有啟用提醒預計出現的總次數。
-    /// 作為進度條 100% 的基準，讓「完成一整天份」才算達標。
-    /// </summary>
-    public int GetDailyGoalTarget()
+    private bool Fail(string message)
     {
-        return DailyAchievementCalculator.CalculateGoal(
-            Settings.Reminders,
-            DateTime.Today,
-            Settings.WorkdayStart,
-            Settings.WorkdayEnd);
+        LastError = message;
+        System.Diagnostics.Debug.WriteLine(message);
+        return false;
     }
 
-    /// <summary>
-    /// 取得今日統計
-    /// </summary>
-    public DailyStatistics GetTodayStatistics()
+    private static T Deserialize<T>(string json) =>
+        JsonConvert.DeserializeObject<T>(json) ?? throw new InvalidDataException("JSON 內容為空值。");
+
+    private static string? ReadIfPresent(string path)
     {
-        var today = Statistics.FirstOrDefault(s => s.Date.Date == DateTime.Today);
-        if (today == null)
-        {
-            today = new DailyStatistics { Date = DateTime.Today };
-            Statistics.Add(today);
-        }
-        return today;
+        try { return File.ReadAllText(path); }
+        catch (FileNotFoundException) { return null; }
     }
 
-    /// <summary>
-    /// 新增提醒紀錄
-    /// </summary>
-    public bool AddRecord(ReminderRecord record)
-    {
-        var today = GetTodayStatistics();
-        today.Records.Add(record);
-        return Save();
-    }
+    private static bool IsTimeOfDay(TimeSpan value) => value >= TimeSpan.Zero && value < TimeSpan.FromDays(1);
 
-    /// <summary>
-    /// 記錄一筆已實際顯示、尚未由使用者處理的提醒。
-    /// </summary>
-    public ReminderRecord AddTriggeredRecord(ReminderItem item)
-    {
-        var record = new ReminderRecord
-        {
-            ReminderId = item.Id,
-            Type = item.Type,
-            Name = item.Name,
-            Timestamp = DateTime.Now,
-            Status = ReminderStatus.Triggered
-        };
+    private static bool IsStorageError(Exception ex) =>
+        ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException;
 
-        AddRecord(record);
-        return record;
-    }
+    private static string ReadError(string path, Exception ex) =>
+        $"無法讀取 {Path.GetFileName(path)}，原始檔案已保留，請備份並修復後再啟動。{Environment.NewLine}{path}{Environment.NewLine}{ex.Message}";
 
-    /// <summary>
-    /// 更新既有提醒事件的狀態，避免完成或稍後動作重複新增紀錄。
-    /// </summary>
-    public bool UpdateRecordStatus(string occurrenceId, ReminderStatus status)
-    {
-        var record = Statistics
-            .SelectMany(day => day.Records)
-            .FirstOrDefault(item => item.Id == occurrenceId);
-
-        if (record == null)
-        {
-            LastError = "找不到這次提醒紀錄，狀態未更新。";
-            return false;
-        }
-
-        if (record.Status == status)
-        {
-            return true;
-        }
-
-        // 完成、略過或稍後皆是同一次提醒的最終使用者動作。
-        if (record.Status != ReminderStatus.Triggered)
-        {
-            LastError = "這次提醒已經處理過了。";
-            return false;
-        }
-
-        record.Status = status;
-        return Save();
-    }
-
-    /// <summary>
-    /// 清理超過 30 天的統計資料
-    /// </summary>
-    private void CleanOldStatistics()
-    {
-        var cutoff = DateTime.Today.AddDays(-30);
-        Statistics.RemoveAll(s => s.Date < cutoff);
-    }
-
-    private const string RunKeyPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-    private const string RunValueName = "HealthReminder";
-
-    /// <summary>
-    /// 設定開機自動啟動
-    /// </summary>
-    public void SetStartWithWindows(bool enabled)
-    {
-        Settings.StartWithWindows = enabled;
-
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
-
-            if (key != null)
-            {
-                if (enabled)
-                {
-                    key.SetValue(RunValueName, $"\"{Application.ExecutablePath}\"");
-                }
-                else
-                {
-                    key.DeleteValue(RunValueName, false);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"設定開機啟動失敗: {ex.Message}");
-        }
-
-        Save();
-    }
-
-    /// <summary>
-    /// 校正開機自動啟動的登錄項，讓它永遠指向目前實際執行的執行檔。
-    /// 避免搬移資料夾或重新發佈後，登錄項仍指向已不存在的舊路徑而失效。
-    /// </summary>
-    public void SyncStartWithWindowsPath()
-    {
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
-            if (key == null) return;
-
-            var registered = key.GetValue(RunValueName) as string;
-
-            if (!Settings.StartWithWindows)
-            {
-                // 設定已關閉，但登錄項還留著就順手清掉，兩邊保持一致。
-                if (registered != null)
-                {
-                    key.DeleteValue(RunValueName, false);
-                }
-                return;
-            }
-
-            var expected = $"\"{Application.ExecutablePath}\"";
-            if (!string.Equals(registered, expected, StringComparison.OrdinalIgnoreCase))
-            {
-                key.SetValue(RunValueName, expected);
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"校正開機啟動路徑失敗: {ex.Message}");
-        }
-    }
+    private sealed record PendingCommit(string SettingsJson, string StatisticsJson);
 }

@@ -1,11 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
     把目前程式碼發佈成單一 EXE，並更新自己機器上開機自啟所使用的版本。
 
 .DESCRIPTION
     開機自啟指向 %LOCALAPPDATA%\HealthReminder\HealthReminder.exe。
     改完程式碼若沒有同步這個檔案，下次開機跑的仍然是舊版。
-    本腳本負責：驗證 → 發佈單檔 → 停掉執行中的舊版 → 覆蓋 → 重新啟動。
+    驗證新檔後只更新自用路徑。若新版本啟動失敗，會嘗試還原上一版。
 
     要產生給親友的安裝包請改用 build-release.ps1。
 
@@ -25,11 +25,14 @@ Set-StrictMode -Version Latest
 $projectRoot = $PSScriptRoot
 $projectFile = Join-Path $projectRoot 'HealthReminder.csproj'
 $verificationProject = Join-Path $projectRoot 'Verification\HealthReminder.Verification.csproj'
-$publishDirectory = Join-Path $projectRoot 'artifacts\publish\win-x64-single-file'
+$buildDirectory = Join-Path $projectRoot 'artifacts\deploy\build'
+$publishBuildDirectory = Join-Path $buildDirectory 'win-x64'
+$publishDirectory = Join-Path $projectRoot 'artifacts\deploy\win-x64-single-file'
 $publishedExe = Join-Path $publishDirectory 'HealthReminder.exe'
 $installDirectory = Join-Path $env:LOCALAPPDATA 'HealthReminder'
 $installedExe = Join-Path $installDirectory 'HealthReminder.exe'
 $processName = 'HealthReminder'
+$backupExe = "$installedExe.bak"
 
 function Invoke-DotNet {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -41,40 +44,44 @@ function Invoke-DotNet {
 }
 
 function Stop-RunningApp {
-    $running = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
-    if ($running.Count -eq 0) {
-        Write-Host '    沒有執行中的實例。'
-        return $false
-    }
+    $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $running = @(Get-Process -Name $processName -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $session -and $_.Path -eq $installedExe })
 
-    Write-Host "    停止 $($running.Count) 個執行中的實例..."
-    $running | Stop-Process -Force
-    # 等待行程真正結束，否則接下來的覆蓋會因為檔案被鎖定而失敗。
-    if (-not $running.WaitForExit(10000)) {
-        throw '等待舊版結束逾時，請手動關閉後重試。'
+    foreach ($process in $running) {
+        Write-Host "    停止目標路徑的行程 $($process.Id)..."
+        Stop-Process -InputObject $process -ErrorAction Stop
+        if (-not $process.WaitForExit(10000)) {
+            throw '等待舊版結束逾時，請從系統匣結束後重試。'
+        }
     }
-
-    return $true
+    return $running.Count -gt 0
 }
 
-function Copy-WithRetry {
-    param(
-        [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$Destination
-    )
-
-    # 行程結束後檔案鎖有時會延遲數百毫秒才釋放，因此重試幾次。
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
-        try {
-            Copy-Item -LiteralPath $Source -Destination $Destination -Force
-            return
-        }
-        catch [System.IO.IOException] {
-            if ($attempt -eq 5) { throw }
-            Write-Host "    檔案仍被鎖定，第 $attempt 次重試..."
-            Start-Sleep -Milliseconds 600
-        }
+function Test-PublishedApp {
+    $process = Start-Process -FilePath $publishedExe -ArgumentList '--smoke-test' -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit(15000)) {
+        Stop-Process -InputObject $process -ErrorAction SilentlyContinue
+        throw '新版本的啟動檢查逾時。'
     }
+    if ($process.ExitCode -ne 0) {
+        throw "新版本的啟動檢查失敗，結束碼：$($process.ExitCode)"
+    }
+}
+
+function Start-InstalledApp {
+    $process = Start-Process -FilePath $installedExe -ArgumentList '--deployment-start' -PassThru
+    if ($process.WaitForExit(2000) -or $process.Path -ne $installedExe) {
+        throw '啟動後找不到新版本的行程，請確認是否有其他位置的健康提醒正在執行。'
+    }
+}
+
+New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+try {
+    $deploymentLock = [IO.File]::Open((Join-Path $installDirectory 'deploy.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+}
+catch [IO.IOException] {
+    throw "無法鎖定部署目錄，請確認其他部署已結束。$($_.Exception.Message)"
 }
 
 Push-Location $projectRoot
@@ -85,7 +92,8 @@ try {
     if (-not $SkipVerification) {
         $step++
         Write-Host "$step/$totalSteps 執行 Verification..." -ForegroundColor Cyan
-        Invoke-DotNet @('run', '--project', $verificationProject, '-c', 'Release')
+        Invoke-DotNet @('build', $verificationProject, '-c', 'Release', '-o', $buildDirectory)
+        Invoke-DotNet @((Join-Path $buildDirectory 'HealthReminder.Verification.dll'))
     }
 
     $step++
@@ -96,50 +104,79 @@ try {
         '-c',
         'Release',
         '-p:PublishProfile=PortableSingleFile',
-        "-p:PublishDir=$publishDirectory\"
+        "-p:OutputPath=$publishBuildDirectory\",
+        "-p:PublishDir=$publishDirectory"
     )
 
     if (-not (Test-Path -LiteralPath $publishedExe -PathType Leaf)) {
         throw "發佈完成後找不到執行檔：$publishedExe"
     }
 
+    Test-PublishedApp
+
     $step++
     Write-Host "$step/$totalSteps 更新 $installDirectory ..." -ForegroundColor Cyan
-    $wasRunning = Stop-RunningApp
-
-    if (-not (Test-Path -LiteralPath $installDirectory)) {
-        New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-    }
-
-    Copy-WithRetry -Source $publishedExe -Destination $installedExe
-
-    $sourceHash = (Get-FileHash -LiteralPath $publishedExe -Algorithm SHA256).Hash
-    $installedHash = (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
-    if ($sourceHash -ne $installedHash) {
-        throw '覆蓋後的檔案與發佈成品不一致，請重新執行。'
-    }
-
-    $step++
-    if ($NoRestart) {
-        Write-Host "$step/$totalSteps 已略過重新啟動（-NoRestart）。" -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "$step/$totalSteps 重新啟動..." -ForegroundColor Cyan
-        # 從正式位置啟動，SyncStartWithWindowsPath() 會順便把開機自啟登錄項校正到這個路徑。
-        Start-Process -FilePath $installedExe
-        Start-Sleep -Seconds 2
-        $started = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
-        if ($started.Count -eq 0) {
-            Write-Warning '啟動後找不到行程，請手動確認。'
+    $stagedExe = Join-Path $installDirectory ("HealthReminder." + [guid]::NewGuid() + ".tmp")
+    $hadPrevious = Test-Path -LiteralPath $installedExe -PathType Leaf
+    $wasRunning = $false
+    $replaced = $false
+    try {
+        Copy-Item -LiteralPath $publishedExe -Destination $stagedExe
+        $installedHash = (Get-FileHash -LiteralPath $stagedExe -Algorithm SHA256).Hash
+        if ((Get-FileHash -LiteralPath $publishedExe -Algorithm SHA256).Hash -ne $installedHash) {
+            throw '待安裝的檔案與發佈成品不一致。'
         }
-        elseif (-not $wasRunning) {
-            Write-Host '    已在系統托盤背景執行。'
+
+        $wasRunning = Stop-RunningApp
+        if ($hadPrevious) {
+            [IO.File]::Replace($stagedExe, $installedExe, $backupExe)
+        }
+        else {
+            [IO.File]::Move($stagedExe, $installedExe)
+        }
+        $replaced = $true
+
+        $step++
+        if ($NoRestart) {
+            Write-Host "$step/$totalSteps 已略過重新啟動（-NoRestart）。" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "$step/$totalSteps 重新啟動..." -ForegroundColor Cyan
+            Start-InstalledApp
+        }
+    }
+    catch {
+        if ($replaced -and $hadPrevious) {
+            try {
+                [IO.File]::Replace($backupExe, $installedExe, [NullString]::Value)
+                Write-Warning '啟動失敗，已還原上一版。'
+            }
+            catch {
+                Write-Warning "無法自動還原上一版，請確認備份：$backupExe"
+                throw
+            }
+        }
+        elseif ($replaced) {
+            Remove-Item -LiteralPath $installedExe -Force
+        }
+        if ($wasRunning) {
+            try { Start-InstalledApp }
+            catch { Write-Warning '請手動啟動舊版。' }
+        }
+        throw
+    }
+    finally {
+        if (Test-Path -LiteralPath $stagedExe) {
+            Remove-Item -LiteralPath $stagedExe -Force
         }
     }
 
     $sizeMb = [math]::Round((Get-Item -LiteralPath $installedExe).Length / 1MB, 1)
-    $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-    $autoStart = (Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue).HealthReminder
+    $runKey = Get-Item -LiteralPath 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue
+    $autoStart = if ($runKey) { $runKey.GetValue('HealthReminder') }
+    if ($autoStart -and $autoStart -ne ('"' + $installedExe + '"')) {
+        Write-Warning '開機自啟指向另一個位置，若要改用此版本，請從此版本的設定頁關閉自啟後再重新開啟。'
+    }
 
     Write-Host ''
     Write-Host '部署完成：' -ForegroundColor Green
@@ -154,4 +191,5 @@ try {
 }
 finally {
     Pop-Location
+    $deploymentLock.Dispose()
 }

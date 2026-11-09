@@ -5,9 +5,15 @@ using HealthReminder.Models;
 using HealthReminder.Services;
 using Newtonsoft.Json;
 
+if (args.Contains("--ux-check")) return UxLayoutVerification.Run(args);
+
 var checks = new List<(string Name, Action Run)>
 {
     ("統計只將 Completed 狀態計為完成", VerifyStatisticsStatuses),
+    ("同名歷史與現行提醒分開標示，保留原計數與類型圖示", VerifyHistoricalStatisticsRows),
+    ("提醒改名與停用後仍依相同 ID 彙整", VerifyRenamedStatisticsRows),
+    ("同名不同 ID 的現行提醒不會被誤合併", VerifyDistinctStatisticsRows),
+    ("無 ID 舊紀錄依類型名稱彙整，同名歷史列可辨識", VerifyLegacyStatisticsRows),
     ("舊版 Completed/Snoozed 欄位可遷移", VerifyLegacyStatusCompatibility),
     ("預設提醒具有唯一識別碼", VerifyDefaultReminderIds),
     ("JSON 載入會取代預設清單而非重複追加", VerifyReminderListDeserialization),
@@ -23,6 +29,15 @@ var checks = new List<(string Name, Action Run)>
     ("一次性提醒稍後會重新啟用", VerifyOneTimeSnooze),
     ("暫停與恢復會保留剩餘時間", VerifyPausePreservesRemainingTime),
     ("手動、勿擾與暫時暫停互不覆蓋", VerifyIndependentPauseReasons),
+    ("損壞設定與統計分開處理，原始檔保持完整", VerifyIndependentFileRecovery),
+    ("寫入失敗後可用同一次提醒重試", VerifyStatusWriteRetry),
+    ("跨檔案提交可在下次啟動補寫", VerifyPendingCommitReplay),
+    ("循環提醒暫停中稍後，恢復後從新期限倒數", VerifyPausedIntervalSnooze),
+    ("舊通知不會延後已變更的排程，仍使用按鈕顯示的分鐘數", VerifyStaleNotificationSnooze),
+    ("一次性提醒顯示後才記帳，稍後仍受暫停約束", VerifyOneTimeDisplayAndSnooze),
+    ("設定重載保留其他期限，最後一筆可刪除", VerifyReloadAndDelete),
+    ("勿擾相同起訖不啟用並支援跨午夜", VerifyQuietHours),
+    ("長時間倒數包含小時", VerifyLongCountdown),
     ("單排狐狸圖資會依 512 像素計算影格", VerifyFoxSingleRowFrames),
     ("狐狸動畫可依動作使用不同播放速度", VerifyFoxAnimationIntervals),
     ("提醒類型會持續使用對應的狐狸動畫", VerifyReminderAnimationMappings),
@@ -68,6 +83,93 @@ static void VerifyStatisticsStatuses()
 
     Equal(4, statistics.GetTotalCount(ReminderType.Water));
     Equal(1, statistics.GetCompletedCount(ReminderType.Water));
+}
+
+static void VerifyHistoricalStatisticsRows()
+{
+    var reminders = new[]
+    {
+        new ReminderItem { Id = "water", Name = "喝水提醒", Type = ReminderType.Water, Emoji = "💧" },
+        new ReminderItem { Id = "eye", Name = "眼睛休息", Type = ReminderType.EyeRest, Emoji = "👀", IsEnabled = false },
+        new ReminderItem { Id = "stretch", Name = "起身活動", Type = ReminderType.Stretch, Emoji = "🏃" }
+    };
+    var records = new List<ReminderRecord>();
+    void Add(string id, string name, ReminderType type, int total, int completed)
+    {
+        for (var i = 0; i < total; i++)
+            records.Add(new ReminderRecord
+            {
+                ReminderId = id, Name = name, Type = type,
+                Status = i < completed ? ReminderStatus.Completed : ReminderStatus.Missed
+            });
+    }
+    Add("old-stretch", "起身活動", ReminderType.Stretch, 15, 0);
+    Add("stretch", "起身活動", ReminderType.Stretch, 6, 1);
+    Add("old-eye", "眼睛休息", ReminderType.EyeRest, 31, 0);
+    Add("old-water", "喝水提醒", ReminderType.Water, 12, 1);
+    Add("water", "喝水提醒", ReminderType.Water, 6, 0);
+    var original = JsonConvert.SerializeObject(records);
+    var rows = ReminderStatisticsCalculator.BuildRows(records, reminders);
+    Equal(5, rows.Count);
+    Equal(70, rows.Sum(row => row.Total));
+    Equal(2, rows.Sum(row => row.Completed));
+    Equal(5, rows.Select(row => row.DisplayName).Distinct().Count());
+    Equal(3, rows.Count(row => row.IsHistorical));
+    Equal("👀", rows.Single(row => row.ReminderId == "old-eye").Emoji);
+    Equal("💧", rows.Single(row => row.ReminderId == "old-water").Emoji);
+    Equal("🏃", rows.Single(row => row.ReminderId == "old-stretch").Emoji);
+    Equal(true, rows.Single(row => row.ReminderId == "old-water").DisplayName.Contains("歷史項目"));
+    Equal(original, JsonConvert.SerializeObject(records));
+}
+
+static void VerifyRenamedStatisticsRows()
+{
+    var records = new[]
+    {
+        new ReminderRecord { ReminderId = "same", Name = "舊名稱", Status = ReminderStatus.Completed },
+        new ReminderRecord { ReminderId = "same", Name = "新名稱", Status = ReminderStatus.Snoozed }
+    };
+    var rows = ReminderStatisticsCalculator.BuildRows(records,
+        [new ReminderItem { Id = "same", Name = "目前名稱", Emoji = "☕", IsEnabled = false }]);
+    Equal(1, rows.Count);
+    Equal("目前名稱", rows[0].DisplayName);
+    Equal("☕", rows[0].Emoji);
+    Equal(false, rows[0].IsHistorical);
+    Equal(2, rows[0].Total);
+    Equal(1, rows[0].Completed);
+}
+
+static void VerifyDistinctStatisticsRows()
+{
+    var reminders = new[]
+    {
+        new ReminderItem { Id = "a", Name = "喝水", IntervalMinutes = 30 },
+        new ReminderItem { Id = "b", Name = "喝水", IntervalMinutes = 60 }
+    };
+    var rows = ReminderStatisticsCalculator.BuildRows(
+        reminders.Select(item => new ReminderRecord { ReminderId = item.Id, Name = item.Name }), reminders);
+    Equal(2, rows.Count);
+    Equal(2, rows.Select(row => row.ReminderId).Distinct().Count());
+    Equal(false, rows.Any(row => row.IsHistorical));
+    Equal(2, rows.Sum(row => row.Total));
+}
+
+static void VerifyLegacyStatisticsRows()
+{
+    var records = new[]
+    {
+        new ReminderRecord { ReminderId = null!, Type = ReminderType.Water, Name = "習慣", Status = ReminderStatus.Completed },
+        new ReminderRecord { ReminderId = "", Type = ReminderType.Water, Name = "習慣" },
+        new ReminderRecord { ReminderId = "old", Type = ReminderType.Water, Name = "習慣" },
+        new ReminderRecord { ReminderId = "other", Type = ReminderType.Custom, Name = "" }
+    };
+    var rows = ReminderStatisticsCalculator.BuildRows(records, []);
+    Equal(3, rows.Count);
+    Equal(4, rows.Sum(row => row.Total));
+    Equal(1, rows.Sum(row => row.Completed));
+    Equal(3, rows.Select(row => row.DisplayName).Distinct().Count());
+    Equal(true, rows.All(row => row.IsHistorical));
+    Equal(true, rows.Any(row => row.DisplayName.Contains("未命名提醒")));
 }
 
 static void VerifyLegacyStatusCompatibility()
@@ -267,7 +369,7 @@ static void VerifyAchievementStreak()
 static void VerifyOneTimeDeadline()
 {
     var target = DateTime.Now.AddMinutes(5);
-    using var timer = new ReminderTimer(new ReminderItem
+    var timer = new ReminderTimer(new ReminderItem
     {
         ScheduleKind = ReminderScheduleKind.OneTime,
         OneTimeAtLocal = target
@@ -288,10 +390,11 @@ static void VerifyOneTimeSnooze()
         OneTimeAtLocal = DateTime.Now.AddMinutes(1),
         IsEnabled = false
     };
-    using var timer = new ReminderTimer(item);
+    var timer = new ReminderTimer(item);
     timer.Snooze(10);
 
-    Equal(true, item.IsEnabled);
+    Equal(true, timer.Item.IsEnabled);
+    Equal(false, item.IsEnabled);
     if (timer.RemainingTime < TimeSpan.FromMinutes(9.9))
     {
         throw new InvalidOperationException("稍後提醒沒有建立新的期限。");
@@ -300,7 +403,7 @@ static void VerifyOneTimeSnooze()
 
 static void VerifyPausePreservesRemainingTime()
 {
-    using var timer = new ReminderTimer(new ReminderItem { IntervalMinutes = 1 });
+    var timer = new ReminderTimer(new ReminderItem { IntervalMinutes = 1 });
     timer.Start();
     timer.Pause();
 
@@ -323,7 +426,7 @@ static void VerifyPausePreservesRemainingTime()
 
 static void VerifyIndependentPauseReasons()
 {
-    using var timer = new ReminderTimer(new ReminderItem { IntervalMinutes = 1 });
+    var timer = new ReminderTimer(new ReminderItem { IntervalMinutes = 1 });
     timer.Start();
     timer.Pause(ReminderPauseReason.User);
     timer.Pause(ReminderPauseReason.DoNotDisturb);
@@ -337,6 +440,238 @@ static void VerifyIndependentPauseReasons()
 
     timer.Resume(ReminderPauseReason.Temporary);
     Equal(false, timer.IsPaused);
+}
+
+static void VerifyIndependentFileRecovery()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var settingsPath = Path.Combine(folder, "settings.json");
+        var statisticsPath = Path.Combine(folder, "statistics.json");
+        const string damaged = "{broken";
+        var goodStats = JsonConvert.SerializeObject(new[]
+        {
+            new DailyStatistics { Records = [new ReminderRecord { Id = "original" }] }
+        });
+        File.WriteAllText(settingsPath, damaged);
+        File.WriteAllText(statisticsPath, goodStats);
+
+        var manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        Equal(true, manager.LoadWarning?.Contains("settings.json") == true);
+        Equal(1, manager.GetTodayStatistics().Records.Count);
+        Equal(false, manager.SaveSettings(new AppSettings()));
+        Equal(damaged, File.ReadAllText(settingsPath));
+        Equal(goodStats, File.ReadAllText(statisticsPath));
+
+        File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new AppSettings
+        {
+            Reminders = [new ReminderItem { Name = "既有自訂提醒" }]
+        }));
+        File.WriteAllText(statisticsPath, damaged);
+        manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        Equal(true, manager.LoadWarning?.Contains("statistics.json") == true);
+        Equal("既有自訂提醒", manager.Settings.Reminders.Single().Name);
+        Equal(false, manager.RecordShown(manager.Settings.Reminders.Single(), "new"));
+        Equal(true, manager.SaveSettings(manager.Settings.Copy()));
+        Equal(damaged, File.ReadAllText(statisticsPath));
+    });
+}
+
+static void VerifyStatusWriteRetry()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        var item = manager.Settings.Reminders.First();
+        Equal(true, manager.RecordShown(item, "retry"));
+        var temporaryPath = Path.Combine(folder, "statistics.json.tmp");
+        Directory.CreateDirectory(temporaryPath);
+        Equal(false, manager.UpdateRecordStatus("retry", ReminderStatus.Completed));
+        Equal(ReminderStatus.Triggered, manager.GetTodayStatistics().Records.Single().Status);
+        Directory.Delete(temporaryPath);
+
+        Equal(true, manager.UpdateRecordStatus("retry", ReminderStatus.Completed));
+        Equal(true, manager.UpdateRecordStatus("retry", ReminderStatus.Completed));
+        var reloaded = new SettingsManager(new StorageLocationSelection(folder, true));
+        Equal(ReminderStatus.Completed, reloaded.GetTodayStatistics().Records.Single().Status);
+    });
+}
+
+static void VerifyPendingCommitReplay()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var location = new StorageLocationSelection(folder, true);
+        var manager = new SettingsManager(location);
+        var item = new ReminderItem
+        {
+            ScheduleKind = ReminderScheduleKind.OneTime,
+            OneTimeAtLocal = DateTime.Today.AddHours(12)
+        };
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [item] }));
+
+        var temporaryPath = Path.Combine(folder, "statistics.json.tmp");
+        Directory.CreateDirectory(temporaryPath);
+        Equal(true, manager.RecordShown(item, "shown"));
+        var journal = Path.Combine(folder, "pending-commit.json");
+        Equal(true, File.Exists(journal));
+        Equal(false, manager.UpdateRecordStatus("shown", ReminderStatus.Completed));
+        Directory.Delete(temporaryPath);
+
+        var reloaded = new SettingsManager(location);
+        Equal(false, File.Exists(journal));
+        Equal(false, reloaded.Settings.Reminders.Single().IsEnabled);
+        Equal(1, reloaded.GetTodayStatistics().Records.Count);
+        Equal(1, reloaded.GetDailyGoalTarget());
+    });
+}
+
+static void VerifyPausedIntervalSnooze()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var clock = new VerificationClock();
+        var manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        var item = new ReminderItem { IntervalMinutes = 60 };
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [item] }));
+        using var service = new ReminderService(manager, clock);
+        service.Initialize();
+        Equal(true, manager.RecordShown(item, "interval"));
+        service.PauseAll();
+        service.PauseFor(TimeSpan.FromMinutes(30));
+        Equal(true, service.Snooze(item, "interval", 10));
+        var timer = service.GetTimers().Single();
+        Equal(TimeSpan.FromMinutes(10), timer.RemainingTime);
+        var deadline = timer.NextTriggerTime;
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Equal(false, service.Snooze(item, "interval", 10));
+        Equal(deadline, timer.NextTriggerTime);
+        service.ResumeAll();
+        Equal(true, timer.IsPaused);
+        service.ResumeTemporaryPause();
+        Equal(TimeSpan.FromMinutes(10), timer.RemainingTime);
+    });
+}
+
+static void VerifyStaleNotificationSnooze()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var clock = new VerificationClock();
+        var manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        var shownItem = new ReminderItem { IntervalMinutes = 20 };
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [shownItem.Copy()] }));
+        using var service = new ReminderService(manager, clock);
+        service.Initialize();
+        Equal(true, manager.RecordShown(shownItem, "already-visible"));
+
+        var updated = manager.Settings.Copy();
+        updated.Reminders[0].IsEnabled = false;
+        Equal(true, manager.SaveSettings(updated));
+        service.Reload();
+        Equal(false, service.Snooze(shownItem, "already-visible", 10));
+        Equal(false, service.GetTimers().Single().Item.IsEnabled);
+
+        updated = manager.Settings.Copy();
+        updated.Reminders[0].ScheduleKind = ReminderScheduleKind.OneTime;
+        updated.Reminders[0].OneTimeAtLocal = clock.GetLocalNow().DateTime.AddHours(1);
+        Equal(true, manager.SaveSettings(updated));
+        service.Reload();
+        var newDeadline = service.GetTimers().Single().NextTriggerTime;
+        Equal(false, service.Snooze(shownItem, "already-visible", 10));
+        Equal(newDeadline, service.GetTimers().Single().NextTriggerTime);
+        Equal(ReminderStatus.Triggered, manager.GetTodayStatistics().Records.Single().Status);
+
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [shownItem.Copy()], SnoozeMinutes = 30 }));
+        service.Reload();
+        Equal(true, service.Snooze(shownItem, "already-visible", 10));
+        Equal(TimeSpan.FromMinutes(10), service.GetTimers().Single().RemainingTime);
+    });
+}
+
+static void VerifyOneTimeDisplayAndSnooze()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var clock = new VerificationClock();
+        var manager = new SettingsManager(new StorageLocationSelection(folder, true));
+        var item = new ReminderItem
+        {
+            ScheduleKind = ReminderScheduleKind.OneTime,
+            OneTimeAtLocal = clock.GetLocalNow().DateTime.AddSeconds(-1)
+        };
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [item] }));
+        using var service = new ReminderService(manager, clock);
+        service.Initialize();
+        var events = new List<ReminderTriggeredEventArgs>();
+        service.OnReminderTriggered += (_, args) => events.Add(args);
+        service.Pulse();
+        service.Pulse();
+        Equal(1, events.Count);
+        Equal(0, manager.GetTodayStatistics().Records.Count);
+        Equal(true, manager.Settings.Reminders.Single().IsEnabled);
+
+        var due = events.Single();
+        Equal(true, service.RecordShown(due.Item, due.OccurrenceId));
+        Equal(false, manager.Settings.Reminders.Single().IsEnabled);
+        Equal(1, manager.GetTodayStatistics().Records.Count);
+        service.PauseFor(TimeSpan.FromMinutes(30));
+        Equal(true, service.Snooze(due.Item, due.OccurrenceId, 10));
+        Equal(true, service.GetTimers().Single().IsPaused);
+        clock.Advance(TimeSpan.FromMinutes(11));
+        service.Pulse();
+        Equal(1, events.Count);
+        service.ResumeTemporaryPause();
+        service.Pulse();
+        Equal(2, events.Count);
+        Equal(ReminderStatus.Snoozed, manager.GetTodayStatistics().Records.Single().Status);
+    });
+}
+
+static void VerifyReloadAndDelete()
+{
+    WithTemporaryDirectory(folder =>
+    {
+        var clock = new VerificationClock();
+        var location = new StorageLocationSelection(folder, true);
+        var manager = new SettingsManager(location);
+        var first = new ReminderItem { Name = "第一筆" };
+        var second = new ReminderItem { Name = "第二筆", IntervalMinutes = 30 };
+        Equal(true, manager.SaveSettings(new AppSettings { Reminders = [first, second] }));
+        using var service = new ReminderService(manager, clock);
+        service.Initialize();
+
+        clock.Advance(TimeSpan.FromMinutes(5));
+        var candidate = manager.Settings.Copy();
+        candidate.Reminders[1].Name = "改名";
+        candidate.ReduceMotion = true;
+        Equal(true, manager.SaveSettings(candidate));
+        Equal(0, service.Reload().Count);
+        Equal(TimeSpan.FromMinutes(25), service.GetTimerById(second.Id)!.RemainingTime);
+
+        Equal(true, manager.DeleteReminder(first.Id));
+        Equal(true, service.Reload().SetEquals([first.Id]));
+        Equal(TimeSpan.FromMinutes(25), service.GetTimers().Single().RemainingTime);
+
+        Equal(true, manager.DeleteReminder(second.Id));
+        Equal(true, service.Reload().SetEquals([second.Id]));
+        Equal(0, service.GetTimers().Count);
+        Equal(0, new SettingsManager(location).Settings.Reminders.Count);
+    });
+}
+
+static void VerifyQuietHours()
+{
+    Equal(false, ReminderTimer.IsInQuietHours(TimeSpan.FromHours(12), TimeSpan.FromHours(12), TimeSpan.FromHours(12)));
+    Equal(true, ReminderTimer.IsInQuietHours(TimeSpan.FromHours(23), TimeSpan.FromHours(22), TimeSpan.FromHours(7)));
+    Equal(true, ReminderTimer.IsInQuietHours(TimeSpan.FromHours(2), TimeSpan.FromHours(22), TimeSpan.FromHours(7)));
+    Equal(false, ReminderTimer.IsInQuietHours(TimeSpan.FromHours(7), TimeSpan.FromHours(22), TimeSpan.FromHours(7)));
+}
+
+static void VerifyLongCountdown()
+{
+    Equal("01:30:00", ReminderCountdownCard.FormatRemaining(TimeSpan.FromMinutes(90)));
+    Equal("24:00:00", ReminderCountdownCard.FormatRemaining(TimeSpan.FromDays(1)));
 }
 
 static void VerifyFoxSingleRowFrames()
@@ -511,4 +846,13 @@ static void Equal<T>(T expected, T actual)
     {
         throw new InvalidOperationException($"Expected: {expected}; Actual: {actual}");
     }
+}
+
+sealed class VerificationClock : TimeProvider
+{
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+    public override DateTimeOffset GetUtcNow() => _now;
+    public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Local;
+    public void Advance(TimeSpan amount) => _now += amount;
 }

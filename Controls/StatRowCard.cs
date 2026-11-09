@@ -19,6 +19,7 @@ public sealed class StatRowCard : UserControl
     {
         BackColor = Color.FromArgb(255, 251, 248);
         DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Height = 50;
         Margin = new Padding(0, 0, 0, 6);
 

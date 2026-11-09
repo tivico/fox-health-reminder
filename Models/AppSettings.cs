@@ -80,4 +80,11 @@ public class AppSettings
     /// 工作時段結束（下班）時間，作為「今日成就」100% 目標的終點。
     /// </summary>
     public TimeSpan WorkdayEnd { get; set; } = new TimeSpan(18, 0, 0); // 下午 6:00
+
+    internal AppSettings Copy()
+    {
+        var copy = (AppSettings)MemberwiseClone();
+        copy.Reminders = Reminders.Select(item => item.Copy()).ToList();
+        return copy;
+    }
 }

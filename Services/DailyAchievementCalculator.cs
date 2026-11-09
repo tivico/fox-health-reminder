@@ -20,7 +20,8 @@ public static class DailyAchievementCalculator
         IEnumerable<ReminderItem> reminders,
         DateTime date,
         TimeSpan workdayStart,
-        TimeSpan workdayEnd)
+        TimeSpan workdayEnd,
+        IEnumerable<ReminderRecord>? shown = null)
     {
         if (!IsValidWorkday(workdayStart, workdayEnd)) return 0;
 
@@ -30,26 +31,39 @@ public static class DailyAchievementCalculator
         var windowMinutes = (workdayEnd - workdayStart).TotalMinutes;
         var target = 0;
 
-        foreach (var reminder in reminders.Where(item => item.IsEnabled))
+        var oneTimeGoals = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var reminder in reminders)
         {
             if (reminder.ScheduleKind == ReminderScheduleKind.OneTime)
             {
                 if (reminder.OneTimeAtLocal is { } at
                     && at >= windowStart
-                    && at <= windowEnd)
+                    && at <= windowEnd
+                    && (reminder.IsEnabled || shown?.Any(record => record.ReminderId == reminder.Id
+                        && record.Timestamp >= at) == true))
                 {
-                    target++;
+                    oneTimeGoals.Add(reminder.Id);
                 }
                 continue;
             }
 
-            if (reminder.IntervalMinutes > 0)
+            if (reminder.IsEnabled && reminder.IntervalMinutes > 0)
             {
                 target += (int)(windowMinutes / reminder.IntervalMinutes);
             }
         }
 
-        return target;
+        if (shown != null)
+        {
+            foreach (var record in shown)
+            {
+                if (record.OneTimeScheduledAtLocal is { } at && at >= windowStart && at <= windowEnd)
+                {
+                    oneTimeGoals.Add(record.ReminderId);
+                }
+            }
+        }
+        return target + oneTimeGoals.Count;
     }
 
     public static int CountCompleted(
